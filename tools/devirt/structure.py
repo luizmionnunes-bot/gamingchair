@@ -25,7 +25,7 @@ def ends(stmts):
     """does every path of stmts end in a terminator?"""
     if not stmts: return False
     s = stmts[-1]
-    if s[0] in ('GOTO', 'RETURN', 'BREAK', 'CONTINUE', 'ERRPATH'): return True
+    if s[0] in ('GOTO', 'RETURN', 'BREAK', 'CONTINUE', 'ERRPATH', 'CRASH'): return True
     if s[0] == 'IF': return ends(s[2]) and ends(s[3])
     return False
 
@@ -148,9 +148,12 @@ class Structurer:
         loop = (header, follow) of the innermost enclosing loop being emitted."""
         out = []
         while n is not None:
-            if n in stop: return out
-            if loop and n == loop[0] and n in self.emitted: out.append(('CONTINUE',)); return out
             if loop and n == loop[1]: out.append(('BREAK',)); return out
+            if loop and n == loop[0] and n in self.emitted: out.append(('CONTINUE',)); return out
+            if n in stop: return out
+            if n in self.emitted and n in self.nodes and not self.G.succ.get(n) and len(self.nodes[n]) <= 12:
+                out += self.tree(self.nodes[n], stop, loop)     # duplicate a small terminal block
+                return out
             if n in self.emitted or n not in self.nodes:
                 self.gotos += 1; self.labels.add(n)
                 out.append(('GOTO', n)); return out

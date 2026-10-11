@@ -198,8 +198,13 @@ def to_ir(v):
     if isinstance(v, SCode): return ('CONTAINER', 'code')
     if isinstance(v, SList): return ('NEWT', [to_ir(x) for x in v.items])
     if isinstance(v, SBuild):
-        n = max(v.items) if v.items else 0
-        return ('CAPS', [to_ir(v.items.get(i)) for i in range(1, n + 1)])
+        v.frozen = True
+        ks = list(v.items)
+        if all(isinstance(k, int) and not isinstance(k, bool) for k in ks):
+            n = max(ks) if ks else 0
+            if set(ks) == set(range(1, n + 1)):
+                return ('CAPS', [to_ir(v.items.get(i)) for i in range(1, n + 1)])
+        return ('NEWT', [('KV', to_ir(k), to_ir(x)) for k, x in v.items.items()])
     raise Unsupported('to_ir %r' % (v,))
 
 BINOPS = {'Add': '+', 'Sub': '-', 'Mul': '*', 'Div': '/', 'FloorDiv': '//', 'Mod': '%', 'Pow': '^',
@@ -516,6 +521,8 @@ class PE:
             if isinstance(obj, SMarks):
                 env['__marks'] = obj.set(env.get('__marks', ()), sval(key), sval(v)); continue
             if isinstance(obj, SBuild):
+                if getattr(obj, 'frozen', False): raise Unsupported('table mutated after use')
+                if isinstance(sval(key), tuple): raise Unsupported('dynamic key into handler table')
                 obj.items[sval(key)] = v if not (isinstance(v, tuple) and v[0] == 'T') else v
                 continue
             if isinstance(obj, SDyn) and obj.kind in ('openup', 'openlist'):
@@ -628,6 +635,8 @@ class PE:
             return ('IFE', to_ir(c), to_ir(self.ev(x['trueExpr'], env, out)), to_ir(self.ev(x['falseExpr'], env, out)))
         if t == 'AstExprCall':
             return self.call(x, env, out)
+        if t == 'AstExprTable' and not x['items']:
+            return SBuild()
         if t == 'AstExprTable':
             items = []
             for it in x['items']:
