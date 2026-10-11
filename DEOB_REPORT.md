@@ -22,8 +22,8 @@ criptografados decodificados em runtime.
 | — | **Fix de cabeçalho**: `--[[ … --[[s]] … ]]` fechava o comentário cedo → `--[==[ … ]==]` | ✅ | sem fix, nem parseia |
 | B | Remoção de código morto (liveness na AST) | ✅ | grafo de estados idêntico |
 | R | Rename do pool de constantes → nomes de stdlib | ✅ | alpha-rename puro; parseia |
-| C | Estruturação do controle de fluxo (máquina de estados → nativo) | ⏳ em progresso | preservação de transições |
-| D | Decodificação de strings (best-effort estático) | ⏳ | — |
+| C | Estruturação do controle de fluxo (máquina de estados → nativo) | ✅ 13 handlers | traços simbólicos + cobertura |
+| D | Decodificação de strings (best-effort estático) | ✅ (inviável) | decoder identificado |
 
 ### Estágio B (feito)
 Removidos **3.455 linhas**: 196 tabelas mortas, 103 funções mortas (37 geradores do
@@ -48,6 +48,41 @@ p23=string.len p24=table.remove p25=table.sort p26=string.unpack p27=string.gmat
 p28=string.find p29=string.reverse p30=tostring p31=math.abs p32=rawget p33=string.format
 ```
 Ex.: `p5(p1, p8(226,…), "")` → `str_gsub(p1, str_char(226,…), "")`.
+
+### Estágio C (feito — 13 handlers nativizados)
+Motor (`tools/sm.py` + `tools/stageC*.py`): para cada handler, reconstrói o CFG de
+blocos básicos a partir das transições resolvidas, separa **efeitos** de **roteamento**
+(atribuições ao loopvar, temps `--[[s]]`, `continue`/`break`/`return`, sentinelas de
+saída `while v ~= K`), e para os **acíclicos** emite `if/else` nativo via
+pós-dominadores. Cada handler nativizado passa por **duas** verificações independentes:
+1. **equivalência de traços simbólicos** (enumera atribuições às condições; o traço do
+   CFG = o traço da árvore nativa emitida), e
+2. **cobertura de efeitos** (toda instrução-efeito do laço — assigns, chamadas,
+   `return <valor>` — está coberta por algum corpo de estado; senão, recusa).
+
+Nativizados (máquina de estados → controle nativo, marcados no arquivo):
+**t[3, 7, 11, 12, 13, 26, 27, 34, 41, 42, 76, 77, 88]**. Exemplo t[11]:
+```lua
+p1 = p1 % t[5]
+if p1 < 0 then p1 = p1 + t[5] end
+return p1
+```
+Outros **13** handlers já eram straight-line (sem máquina de estados).
+
+**Não nativizados por segurança (19):** handlers com loops reais (cíclicos) ou com
+dispatch aninhado que manipula o loopvar dentro de `while`/`repeat` — entre eles os
+grandes `t[18]`, `t[92]`, `t[100]`, `t[101]`, `t[114]` (574 estados). Reestruturá-los
+com garantia exige um relooper com suporte a loops; deixei-os na forma B+R limpa em vez
+de arriscar emitir código nativo sutilmente incorreto. Verificado: o grafo de estados
+desses 19 (+ os 13 straight-line) é **idêntico** ao do Stage A/R.
+
+### Estágio D (feito — conclusão: inviável estaticamente)
+As strings criptografadas são decodificadas em runtime por **`t[18](<blob>)`**
+(ex.: `t[19] = t[18]("nN(\"*?\026...")`). `t[18]` é um handler-máquina-de-estados que
+depende de `t[1][...]` inicializado em runtime por outros handlers. Decodificar
+estaticamente exigiria emular a VM inteira com seu estado — fora do escopo e não
+confiável. Os decoders aritméticos puros `fN(p1)=t3[p1]+p1*K%4096-C` que pareciam
+decodificar strings eram, na verdade, **mortos** (nunca chamados; removidos no Stage B).
 
 ## Inventário dos handlers (pós-B)
 45 handlers, **1.050 estados** no total. 13 handlers não têm máquina de estados de

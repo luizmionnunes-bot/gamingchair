@@ -1,19 +1,27 @@
 --[==[ ====================================================================
-  gamingchairac.unflat.lua  —  un-flattened (Stage A) de gamingchairac.lua
-  Gerado por tools/unflatten.pl.
+  gamingchairac.deob.lua  —  desofuscacao de gamingchairac.lua (via Stage A).
 
-  O QUE MUDOU: toda transicao de estado ofuscada
-      v = t2[K] or fGEN(K, x, y)
-  foi resolvida para o NUMERO de estado literal:
-      v = <estado>  --[[s]]
-  (2624/2624 transicoes resolvidas, 0 restantes; verificado em t[11]).
+  PIPELINE (cada etapa validada com luau-ast; ver DEOB_REPORT.md):
+    Stage A : unflatten das transicoes de estado  (v = t2[K] or fGEN(...) -> v = <estado>)
+    Stage B : remocao de codigo morto (liveness na AST): tabelas so-escritas,
+              funcoes nunca referenciadas (geradores do flattening + decoders
+              mortos), escritas de bookkeeping t3[n]=<num>.
+    Stage R : rename do pool de constantes de f1 -> nomes de stdlib
+              (p5 -> str_gsub, p8 -> str_char, ...; ver assinatura de f1).
+    Stage C : 13 handlers com maquina de estados ACICLICA foram reestruturados
+              para if/else nativo (marcados "[state machine structured ...]"),
+              cada um verificado por equivalencia de tracos simbolicos + checagem
+              de cobertura de efeitos. Outros 13 handlers ja eram straight-line.
+              Os 19 restantes (loops / dispatch aninhado, incl. os handlers
+              grandes t[18]/t[92]/t[100]/t[101]/t[114]) permanecem como maquina
+              de estados limpa — reestrutura-los com seguranca exige um relooper
+              com loops; nao feito para nao arriscar o comportamento.
 
-  Agora cada handler le-se como uma maquina de estados explicita
-  (while + if v == <estado>), rastreavel a mao. Ruido restante:
-   - geradores `local function fN(a,b,c)` agora mortos (nao removidos:
-     alguns nomes fN sao tambem funcoes reais do programa noutro escopo).
-   - escritas opacas `t3[n] = <num>` (dead bookkeeping, nunca lidas).
-  Nao feito (Stage C): converter a maquina de estados em if/while nativos.
+  Strings: decodificadas em RUNTIME por t[18](<blob>), que depende de estado
+  t[1][...] inicializado em runtime -> decodificacao estatica inviavel.
+
+  Equivalencia preservada; NAO e o fonte original (nomes/comentarios perdidos;
+  t[6], t[108] sao buracos do decompilador: "structuring failed").
 ===================================================================== ]==]
 
 -- Script Path: game:GetService("Workspace").internal
@@ -26,47 +34,13 @@ local function f1(error_, next_, str_match, tonumber_, str_gsub, str_sub, tbl_in
     t[3] = function(p1, p2, p3) --[[ Line: 3 | Upvalues: t (ref) ]]
         local v1 = nil
         local v2 = nil
-        local v4 = 95094 --[[s]]
-        local v5 = v4
-        repeat
-            if v5 <= 605073 then
-                if v5 < 605073 then
-                    if v5 == 122736 then
-                        v1[v2 + 3] = p3
-                        local v6 = 664632 --[[s]]
-                        v5 = v6
-                    else
-                        if v5 ~= 95094 then
-                            break
-                        end
-                        v1 = t[1][29]
-                        local v8 = 610772 --[[s]]
-                        v5 = v8
-                    end
-                else
-                    if v5 ~= 605073 then
-                        break
-                    end
-                    v1[v2 + 2] = p2
-                    local v9 = 122736 --[[s]]
-                    v5 = v9
-                end
-            elseif v5 >= 782903 then
-                if v5 ~= 782903 then
-                    break
-                end
-                v1[v2 + 1] = p1
-                local v10 = 605073 --[[s]]
-                v5 = v10
-            else
-                if v5 ~= 610772 then
-                    break
-                end
-                v2 = #v1
-                local v11 = 782903 --[[s]]
-                v5 = v11
-            end
-        until v5 == 664632
+        -- [state machine structured to native control flow]
+        v1 = t[1][29]
+        v2 = #v1
+        v1[v2 + 1] = p1
+        v1[v2 + 2] = p2
+        v1[v2 + 3] = p3
+        return
     end
     t[6] = function(p1, p2, p3) --[[ Line: 3 | Upvalues: t (ref) ]]
         -- structuring failed for function 3; please report this in our discord https://discord.gg/y63m4zUYa4
@@ -8977,39 +8951,12 @@ local function f1(error_, next_, str_match, tonumber_, str_gsub, str_sub, tbl_in
                             return
                         end
                         t[11] = function(p1) --[[ Line: 3 | Upvalues: t (ref) ]]
-                            local v3 = 549150 --[[s]]
-                            local v4 = v3
-                            while true do
-                                if v4 <= 549150 then
-                                    if v4 == 549150 then
-                                        p1 = p1 % t[5]
-                                        if p1 < 0 then
-                                            local v5 = 852878 --[[s]]
-                                            v4 = v5
-                                        else
-                                            local v6 = 820352 --[[s]]
-                                            v4 = v6
-                                        end
-                                    elseif v4 == 373627 then
-                                        return p1
-                                    else
-                                        return
-                                    end
-                                elseif v4 >= 852878 then
-                                    if v4 ~= 852878 then
-                                        return
-                                    end
-                                    p1 = p1 + t[5]
-                                    local v7 = 373627 --[[s]]
-                                    v4 = v7
-                                else
-                                    if v4 ~= 820352 then
-                                        return
-                                    end
-                                    local v9 = 373627 --[[s]]
-                                    v4 = v9
-                                end
+                            -- [state machine structured to native control flow]
+                            p1 = p1 % t[5]
+                            if p1 < 0 then
+                                p1 = p1 + t[5]
                             end
+                            return p1
                         end
                         v3 = 2613 --[[s]]
                     end
@@ -9452,56 +9399,24 @@ local function f1(error_, next_, str_match, tonumber_, str_gsub, str_sub, tbl_in
                     end
                     t[76] = function(p1) --[[ Line: 3 | Upvalues: t (ref) ]]
                         local v1 = nil
-                        local v4 = 854663 --[[s]]
-                        while true do
-                            if v4 < 550209 then
-                                if v4 == 113878 then
-                                    v1 = 1
-                                    local v6 = 550209 --[[s]]
-                                    v4 = v6
-                                else
-                                    if v4 ~= 119967 then
-                                        return
-                                    end
-                                    if v1 == 0 then
-                                        local v7 = 113878 --[[s]]
-                                        v4 = v7
-                                    else
-                                        local v8 = 921112 --[[s]]
-                                        v4 = v8
-                                    end
-                                end
-                            elseif v4 > 854663 then
-                                if v4 ~= 921112 then
-                                    return
-                                end
-                                local v9 = 550209 --[[s]]
-                                v4 = v9
-                            elseif v4 > 619867 then
-                                if v4 ~= 854663 then
-                                    return
-                                end
-                                v1 = p1 % t[5]
-                                if t[1][6][4] and t[1][6][3] then
-                                    local v10 = 119967 --[[s]]
-                                    v4 = v10
-                                else
-                                    local v11 = 619867 --[[s]]
-                                    v4 = v11
-                                end
-                            elseif v4 > 550209 then
-                                if v4 ~= 619867 then
-                                    return
-                                end
-                                local v12 = 550209 --[[s]]
-                                v4 = v12
-                            elseif v4 == 550209 then
+                        -- [state machine structured to native control flow]
+                        v1 = p1 % t[5]
+                        if t[1][6][4] and t[1][6][3] then
+                            if v1 == 0 then
+                                v1 = 1
                                 return v1
                             else
-                                return
+                                if v4 == 886292 then
+                                    return
+                                else
+                                    return v1
+                                end
                             end
+                        else
                             if v4 == 886292 then
                                 return
+                            else
+                                return v1
                             end
                         end
                     end
@@ -9518,39 +9433,14 @@ local function f1(error_, next_, str_match, tonumber_, str_gsub, str_sub, tbl_in
                         end
                         t[27] = function(p1) --[[ Line: 3 | Upvalues: t (ref) ]]
                             local v1 = nil
-                            local v4 = 71378 --[[s]]
-                            while v4 ~= 339240 do
-                                if v4 > 68942 then
-                                    if v4 > 523951 and v4 == 697953 then
-                                        return v1
-                                    elseif v4 > 523951 then
-                                        break
-                                    end
-                                    if v4 == 523951 then
-                                        local v6 = 339240 --[[s]]
-                                        v4 = v6
-                                        continue
-                                    end
-                                    if v4 ~= 71378 then
-                                        break
-                                    end
-                                    local v7 = t[1][15][5](p1, t[20])
-                                    local v8 = 68942 --[[s]]
-                                    v4 = v8
-                                    v1 = v7
-                                else
-                                    if v4 ~= 68942 then
-                                        break
-                                    end
-                                    t[20] = t[20] + 1
-                                    if t[1][30][11] then
-                                        local v9 = 697953 --[[s]]
-                                        v4 = v9
-                                        continue
-                                    end
-                                    local v10 = 523951 --[[s]]
-                                    v4 = v10
-                                end
+                            -- [state machine structured to native control flow]
+                            local v7 = t[1][15][5](p1, t[20])
+                            v1 = v7
+                            t[20] = t[20] + 1
+                            if t[1][30][11] then
+                                return v1
+                            else
+                                return
                             end
                         end
                         v3 = 2323 --[[s]]
@@ -9640,31 +9530,12 @@ local function f1(error_, next_, str_match, tonumber_, str_gsub, str_sub, tbl_in
                                 elseif v3 < 2293 then
                                     if v3 == 2283 then
                                         t[13] = function(p1, p2, p3) --[[ Line: 3 | Upvalues: t (ref) ]]
-                                            local v3 = 347046 --[[s]]
-                                            local v4 = v3
-                                            repeat
-                                                if v4 < 347046 then
-                                                    if v4 == 32335 then
-                                                        return t[11](t[12](p1, p2) + t[11](p3))
-                                                    end
-                                                    break
-                                                end
-                                                if v4 == 347046 then
-                                                    if t[1][33][1] then
-                                                        local v6 = 32335 --[[s]]
-                                                        v4 = v6
-                                                        continue
-                                                    end
-                                                    local v7 = 387537 --[[s]]
-                                                    v4 = v7
-                                                    continue
-                                                end
-                                                if v4 ~= 387537 then
-                                                    break
-                                                end
-                                                local v8 = 595927 --[[s]]
-                                                v4 = v8
-                                            until v8 == 595927
+                                            -- [state machine structured to native control flow]
+                                            if t[1][33][1] then
+                                                return t[11](t[12](p1, p2) + t[11](p3))
+                                            else
+                                                return
+                                            end
                                         end
                                         v3 = 2108 --[[s]]
                                     else
@@ -14352,29 +14223,12 @@ local function f1(error_, next_, str_match, tonumber_, str_gsub, str_sub, tbl_in
                         t[41] = function(p1) --[[ Line: 3 | Upvalues: t (ref) ]]
                             local v1 = nil
                             local v2 = nil
-                            local v5 = 642820 --[[s]]
-                            repeat
-                                if not (v5 <= 642820) then
-                                    if v5 == 690845 then
-                                        return v2 * 256 + v1
-                                    end
-                                    break
-                                end
-                                if v5 == 642820 then
-                                    local v6, v7 = t[1][15][5](p1, t[20], t[20] + 1)
-                                    local v8 = 159896 --[[s]]
-                                    v5 = v8
-                                    v2 = v7
-                                    v1 = v6
-                                    continue
-                                end
-                                if v5 ~= 159896 then
-                                    break
-                                end
-                                t[20] = t[20] + t[1][30][7]
-                                local v9 = 690845 --[[s]]
-                                v5 = v9
-                            until v9 == 431840
+                            -- [state machine structured to native control flow]
+                            local v6, v7 = t[1][15][5](p1, t[20], t[20] + 1)
+                            v2 = v7
+                            v1 = v6
+                            t[20] = t[20] + t[1][30][7]
+                            return v2 * 256 + v1
                         end
                         v3 = 2783 --[[s]]
                     else
@@ -14416,42 +14270,19 @@ local function f1(error_, next_, str_match, tonumber_, str_gsub, str_sub, tbl_in
                                         if v3 == 1998 then
                                             t[88] = function(p1, p2, p3, p4, p5, p6) --[[ Line: 3 | Upvalues: t (ref) ]]
                                                 local v1 = nil
-                                                local v3 = 80828 --[[s]]
-                                                local v4 = v3
-                                                while true do
-                                                    if v4 >= 933914 then
-                                                        if v4 ~= 933914 then
-                                                            return
-                                                        end
-                                                        local v5 = t[13](v1, p3, p4)
-                                                        local v7 = 249908 --[[s]]
-                                                        v4 = v7
-                                                        v1 = v5
-                                                        if v4 == 827559 then
-                                                            return
-                                                        end
+                                                -- [state machine structured to native control flow]
+                                                local v8 = t[8](p1 % t[5], (p2 + p5) % t[5])
+                                                v1 = v8
+                                                local v5 = t[13](v1, p3, p4)
+                                                v1 = v5
+                                                if v4 == 827559 then
+                                                    return
+                                                else
+                                                    v1 = t[8](v1, t[10](v1, p6)) % t[5]
+                                                    if v4 == 827559 then
+                                                        return
                                                     else
-                                                        if v4 >= 831970 and v4 == 831970 then
-                                                            return v1
-                                                        elseif v4 >= 831970 then
-                                                            return
-                                                        end
-                                                        if v4 == 80828 then
-                                                            local v8 = t[8](p1 % t[5], (p2 + p5) % t[5])
-                                                            local v9 = 933914 --[[s]]
-                                                            v4 = v9
-                                                            v1 = v8
-                                                        else
-                                                            if v4 ~= 249908 then
-                                                                return
-                                                            end
-                                                            v1 = t[8](v1, t[10](v1, p6)) % t[5]
-                                                            local v10 = 831970 --[[s]]
-                                                            v4 = v10
-                                                        end
-                                                        if v4 == 827559 then
-                                                            return
-                                                        end
+                                                        return v1
                                                     end
                                                 end
                                             end
@@ -14724,64 +14555,33 @@ local function f1(error_, next_, str_match, tonumber_, str_gsub, str_sub, tbl_in
                             t[42] = function(p1) --[[ Line: 3 | Upvalues: t (ref) ]]
                                 local v1 = nil
                                 local sum = nil
-                                local v4 = 1591 --[[s]]
-                                while true do
-                                    if v4 >= 1611 then
-                                        if v4 < 1619 then
-                                            if v4 ~= 1611 then
-                                                return
-                                            end
-                                            local v5 = t[34](p1)
-                                            if v5 == 0 then
-                                                v4, sum = 1595 --[[s]], v5
-                                            else
-                                                v4, sum = 1627 --[[s]], v5
-                                            end
-                                        elseif v4 <= 1627 then
-                                            if v4 < 1623 then
-                                                if v4 ~= 1619 then
-                                                    return
-                                                end
+                                -- [state machine structured to native control flow]
+                                local v16 = t[34](p1)
+                                if v4 == 1615 then
+                                    return
+                                else
+                                    local v5 = t[34](p1)
+                                    if v5 == 0 then
+                                        return v1
+                                    else
+                                        if sum >= 2147483648 then
+                                            if t[1][8][3] then
                                                 sum = sum - 4294967296
-                                                v4 = 1599 --[[s]]
-                                            elseif v4 == 1627 then
-                                                v4 = if sum >= 2147483648 then 1607 --[[s]] else 1623 --[[s]]
-                                            else
-                                                if v4 ~= 1623 then
+                                                if v4 == 1615 then
                                                     return
+                                                else
+                                                    return sum * 4294967296 + v1
                                                 end
-                                                v4 = 1603 --[[s]]
-                                            end
-                                        else
-                                            if v4 ~= 1657 then
-                                                return
-                                            end
-                                            v4 = 1615 --[[s]]
-                                        end
-                                    elseif v4 >= 1599 then
-                                        if v4 == 1599 then
-                                            v4 = 1603 --[[s]]
-                                        else
-                                            if v4 == 1603 then
+                                            else
                                                 return sum * 4294967296 + v1
                                             end
-                                            if v4 ~= 1607 then
+                                        else
+                                            if v4 == 1615 then
                                                 return
+                                            else
+                                                return sum * 4294967296 + v1
                                             end
-                                            v4 = if t[1][8][3] then 1619 --[[s]] else 1599 --[[s]]
                                         end
-                                    else
-                                        if v4 == 1595 then
-                                            return v1
-                                        end
-                                        if v4 ~= 1591 then
-                                            return
-                                        end
-                                        local v16 = t[34](p1)
-                                        v4, v1 = 1611 --[[s]], v16
-                                    end
-                                    if v4 == 1615 then
-                                        return
                                     end
                                 end
                             end
@@ -16461,70 +16261,51 @@ end
                                         local v2 = nil
                                         local v3 = nil
                                         local v4 = nil
-                                        local v7 = 846700 --[[s]]
-                                        while true do
-                                            if v7 < 340881 then
-                                                if v7 == 198137 then
-                                                    v1 = p2 % 65536
-                                                    local v8 = 892093 --[[s]]
-                                                    v7 = v8
-                                                else
-                                                    if v7 ~= 29690 then
-                                                        return
-                                                    end
-                                                    local v9 = t[11](p2)
-                                                    local v10 = 198137 --[[s]]
-                                                    v7 = v10
-                                                    p2 = v9
-                                                end
-                                            elseif v7 <= 846700 then
-                                                if v7 <= 507710 then
-                                                    if v7 == 507710 then
-                                                        local v11 = math_floor(p2 / 65536)
-                                                        local v13 = 831267 --[[s]]
-                                                        v4 = v11
-                                                        v7 = v13
-                                                    else
-                                                        if v7 ~= 340881 then
-                                                            return
-                                                        end
-                                                        local v14 = math_floor(p1 / 65536)
-                                                        local v15 = 507710 --[[s]]
-                                                        v3 = v14
-                                                        v7 = v15
-                                                    end
-                                                elseif v7 <= 613363 then
-                                                    if v7 ~= 613363 then
-                                                        return
-                                                    end
-                                                    local v16 = 198137 --[[s]]
-                                                    v7 = v16
-                                                elseif v7 == 846700 then
-                                                    local v17 = t[11](p1)
-                                                    if t[1][8][3] and t[1][8][6] then
-                                                        local v18 = 29690 --[[s]]
-                                                        v7 = v18
-                                                        p1 = v17
-                                                    else
-                                                        local v20 = 613363 --[[s]]
-                                                        v7 = v20
-                                                        p1 = v17
-                                                    end
-                                                elseif v7 == 831267 then
-                                                    return t[11](v2 * v1 + (v3 * v1 + v2 * v4) % 65536 * 65536)
-                                                else
-                                                    return
-                                                end
-                                            else
-                                                if v7 ~= 892093 then
-                                                    return
-                                                end
-                                                v2 = p1 % 65536
-                                                local v21 = 340881 --[[s]]
-                                                v7 = v21
-                                            end
+                                        -- [state machine structured to native control flow]
+                                        local v17 = t[11](p1)
+                                        if t[1][8][3] and t[1][8][6] then
+                                            p1 = v17
+                                            local v9 = t[11](p2)
+                                            p2 = v9
                                             if v7 == 357632 then
                                                 return
+                                            else
+                                                v1 = p2 % 65536
+                                                v2 = p1 % 65536
+                                                if v7 == 357632 then
+                                                    return
+                                                else
+                                                    local v14 = math_floor(p1 / 65536)
+                                                    v3 = v14
+                                                    if v7 == 357632 then
+                                                        return
+                                                    else
+                                                        local v11 = math_floor(p2 / 65536)
+                                                        v4 = v11
+                                                        return t[11](v2 * v1 + (v3 * v1 + v2 * v4) % 65536 * 65536)
+                                                    end
+                                                end
+                                            end
+                                        else
+                                            p1 = v17
+                                            if v7 == 357632 then
+                                                return
+                                            else
+                                                v1 = p2 % 65536
+                                                v2 = p1 % 65536
+                                                if v7 == 357632 then
+                                                    return
+                                                else
+                                                    local v14 = math_floor(p1 / 65536)
+                                                    v3 = v14
+                                                    if v7 == 357632 then
+                                                        return
+                                                    else
+                                                        local v11 = math_floor(p2 / 65536)
+                                                        v4 = v11
+                                                        return t[11](v2 * v1 + (v3 * v1 + v2 * v4) % 65536 * 65536)
+                                                    end
+                                                end
                                             end
                                         end
                                     end
@@ -17033,41 +16814,21 @@ end
                                         local v2 = nil
                                         local v3 = nil
                                         local v4 = nil
-                                        local v7 = 275091 --[[s]]
-                                        local v8 = v7
-                                        while true do
-                                            if v8 < 848710 then
-                                                if v8 == 275091 then
-                                                    local v9, v10, v11, v12 = t[1][15][5](p1, t[20], t[20] + t[1][28])
-                                                    if t[1][21][6] then
-                                                        local v13 = 933343 --[[s]]
-                                                        v8 = v13
-                                                        v4 = v12
-                                                        v3 = v11
-                                                        v2 = v10
-                                                        v1 = v9
-                                                    else
-                                                        local v14 = 201903 --[[s]]
-                                                        v8 = v14
-                                                        v4 = v12
-                                                        v3 = v11
-                                                        v2 = v10
-                                                        v1 = v9
-                                                    end
-                                                elseif v8 == 201903 then
-                                                    return v4 * 16777216 + v3 * 65536 + v2 * 256 + v1
-                                                else
-                                                    return
-                                                end
-                                            else
-                                                if v8 ~= 933343 then
-                                                    return
-                                                end
-                                                t[20] = t[20] + t[1][7]
-                                                local v15 = 201903 --[[s]]
-                                                v8 = v15
-                                            end
+                                        -- [state machine structured to native control flow]
+                                        local v9, v10, v11, v12 = t[1][15][5](p1, t[20], t[20] + t[1][28])
+                                        if t[1][21][6] then
+                                            v4 = v12
+                                            v3 = v11
+                                            v2 = v10
+                                            v1 = v9
+                                            t[20] = t[20] + t[1][7]
+                                        else
+                                            v4 = v12
+                                            v3 = v11
+                                            v2 = v10
+                                            v1 = v9
                                         end
+                                        return v4 * 16777216 + v3 * 65536 + v2 * 256 + v1
                                     end
                                     v3 = 2273 --[[s]]
                                 end
@@ -17204,49 +16965,20 @@ end
                             elseif v3 > 2498 then
                                 if v3 == 2508 then
                                     t[7] = function(p1, p2, p3) --[[ Line: 3 | Upvalues: t (ref), p19 (copy) ]]
-                                        local v3 = 973529 --[[s]]
-                                        while true do
-                                            if v3 > 451230 then
-                                                if v3 <= 792290 then
-                                                    if v3 == 792290 then
-                                                        return t[6](p1, p2, p3)
-                                                    end
-                                                    if v3 ~= 587796 then
-                                                        return
-                                                    end
-                                                    if t[1][33][2] and t[1][33][1] then
-                                                        local v5 = 792290 --[[s]]
-                                                        v3 = v5
-                                                    else
-                                                        local v6 = 451230 --[[s]]
-                                                        v3 = v6
-                                                    end
-                                                else
-                                                    if v3 ~= 973529 then
-                                                        return
-                                                    end
-                                                    if p3 - p2 + 1 > t[1][39][2] then
-                                                        local v7 = 587796 --[[s]]
-                                                        v3 = v7
-                                                    else
-                                                        local v8 = 404337 --[[s]]
-                                                        v3 = v8
-                                                    end
-                                                end
-                                                if v3 == 23420 then
-                                                    return
-                                                end
-                                            elseif v3 == 451230 then
-                                                local v10 = 23420 --[[s]]
-                                                v3 = v10
+                                        -- [state machine structured to native control flow]
+                                        if p3 - p2 + 1 > t[1][39][2] then
+                                            if t[1][33][2] and t[1][33][1] then
+                                                return t[6](p1, p2, p3)
+                                            else
+                                                local v10 = 23420
                                                 if v10 == 23420 then
                                                     return
+                                                else
+                                                    return
                                                 end
-                                            elseif v3 == 404337 then
-                                                return tbl_unpack(p1, p2, p3)
-                                            else
-                                                return
                                             end
+                                        else
+                                            return tbl_unpack(p1, p2, p3)
                                         end
                                     end
                                     v3 = 2873 --[[s]]
@@ -17468,49 +17200,22 @@ end
                     end
                 elseif v3 == 2593 then
                     t[77] = function(p1) --[[ Line: 3 | Upvalues: t (ref) ]]
-                        local v3 = 108801 --[[s]]
-                        while true do
-                            if v3 > 668767 then
-                                if v3 == 829564 then
-                                    local v4 = 283585 --[[s]]
-                                    v3 = v4
-                                else
-                                    if v3 ~= 757560 then
-                                        return
-                                    end
-                                    p1 = t[8](p1, t[9](p1, t[1][30][10])) % t[5]
-                                    if p1 == 0 then
-                                        local v5 = 668767 --[[s]]
-                                        v3 = v5
-                                    else
-                                        local v6 = 829564 --[[s]]
-                                        v3 = v6
-                                    end
-                                end
-                            elseif v3 < 266254 then
-                                if v3 ~= 108801 then
+                        -- [state machine structured to native control flow]
+                        p1 = t[8](p1, t[9](p1, 13)) % t[5]
+                        if v3 == 451249 then
+                            return
+                        else
+                            p1 = t[8](p1, t[10](p1, t[1][6][2])) % t[5]
+                            p1 = t[8](p1, t[9](p1, t[1][30][10])) % t[5]
+                            if p1 == 0 then
+                                p1 = 1
+                                if v3 == 451249 then
                                     return
-                                end
-                                p1 = t[8](p1, t[9](p1, 13)) % t[5]
-                                local v7 = 266254 --[[s]]
-                                v3 = v7
-                            elseif v3 == 266254 then
-                                p1 = t[8](p1, t[10](p1, t[1][6][2])) % t[5]
-                                local v8 = 757560 --[[s]]
-                                v3 = v8
-                            else
-                                if v3 == 283585 then
+                                else
                                     return p1
                                 end
-                                if v3 ~= 668767 then
-                                    return
-                                end
-                                p1 = 1
-                                local v10 = 283585 --[[s]]
-                                v3 = v10
-                            end
-                            if v3 == 451249 then
-                                return
+                            else
+                                return p1
                             end
                         end
                     end
@@ -18405,51 +18110,14 @@ end
                 end
                 t[26] = function(p1) --[[ Line: 3 | Upvalues: t (ref) ]]
                     local v1 = nil
-                    local v3 = 128117 --[[s]]
-                    local v4 = v3
-                    while v4 ~= 812951 do
-                        if v4 >= 397745 then
-                            if v4 > 397745 then
-                                if v4 ~= 620932 then
-                                    break
-                                end
-                                local v5 = t[1][39][1](v1, t[9](t[1][15][5](p1, t[20], t[20]), t[1][39][4]))
-                                local v6 = 131841 --[[s]]
-                                v4 = v6
-                                v1 = v5
-                            elseif v4 == 397745 then
-                                return v1
-                            else
-                                break
-                            end
-                        else
-                            if v4 < 131841 then
-                                if v4 == 128117 then
-                                    v1 = 0
-                                    if t[1][6][4] and t[1][6][3] then
-                                        local v7 = 620932 --[[s]]
-                                        v4 = v7
-                                        continue
-                                    end
-                                    local v9 = 125935 --[[s]]
-                                    v4 = v9
-                                else
-                                    if v4 ~= 125935 then
-                                        break
-                                    end
-                                    local v10 = 131841 --[[s]]
-                                    v4 = v10
-                                end
-                                continue
-                            end
-                            if v4 ~= 131841 then
-                                break
-                            end
-                            t[20] = t[20] + 1
-                            local v11 = 397745 --[[s]]
-                            v4 = v11
-                        end
+                    -- [state machine structured to native control flow]
+                    v1 = 0
+                    if t[1][6][4] and t[1][6][3] then
+                        local v5 = t[1][39][1](v1, t[9](t[1][15][5](p1, t[20], t[20]), t[1][39][4]))
+                        v1 = v5
                     end
+                    t[20] = t[20] + 1
+                    return v1
                 end
                 v3 = 2463 --[[s]]
             end
