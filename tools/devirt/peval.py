@@ -158,6 +158,12 @@ class SMarks(SObj):
         cur[k - 1] = v
         return tuple(cur)
 
+class SBuild(SObj):
+    """table being filled by the handler (closure capture lists)"""
+    kind = 'build'
+    def __init__(self): self.items = {}
+    def index(self, pe, k): return self.items.get(k)
+
 class SBytecode(SObj):
     kind = 'bytecode'
 
@@ -191,6 +197,9 @@ def to_ir(v):
     if isinstance(v, SConsts): return ('CONTAINER', 'consts')
     if isinstance(v, SCode): return ('CONTAINER', 'code')
     if isinstance(v, SList): return ('NEWT', [to_ir(x) for x in v.items])
+    if isinstance(v, SBuild):
+        n = max(v.items) if v.items else 0
+        return ('CAPS', [to_ir(v.items.get(i)) for i in range(1, n + 1)])
     raise Unsupported('to_ir %r' % (v,))
 
 BINOPS = {'Add': '+', 'Sub': '-', 'Mul': '*', 'Div': '/', 'FloorDiv': '//', 'Mod': '%', 'Pow': '^',
@@ -285,6 +294,7 @@ class PE:
         env[bind['nmarks']] = nmarks
         env['__marks'] = marks
         self.bind = bind
+        self.tsrc, self.ver = {}, {}
         self.cur_proto = proto
         self.cur_pc = pc
         return self.exec([('blk', self.stmts, self.start)], env, 0)
@@ -456,6 +466,8 @@ class PE:
         if isinstance(v, tuple) and v[0] not in ('CONST', 'K', 'T', 'FN') and mentions_mutable(v):
             T = self.new_tmp()
             out.append(('LOCAL', T, v))
+            if v[0] in ('R', 'U', 'ACC'):
+                self.tsrc[T] = (v, self.ver.get(v, 0))
             return T
         return v
 
@@ -489,7 +501,9 @@ class PE:
                 if role in ('pc', 'sp', 'mark', 'nmarks', 'carry'):
                     env[k] = v if not (isinstance(v, tuple) and v[0] == 'CONST') else v[1]
                     continue
-                if role in ('opencount', 'v8'):
+                if role == 'opencount':
+                    continue
+                if role == 'v8':
                     out.append(('SET', ('VMVAR', role), to_ir(v))); continue
                 cur = env.get(k)
                 if isinstance(cur, tuple) and cur[0] == 'T':
@@ -501,7 +515,13 @@ class PE:
                 env['__bcpos'] = sval(v); continue
             if isinstance(obj, SMarks):
                 env['__marks'] = obj.set(env.get('__marks', ()), sval(key), sval(v)); continue
+            if isinstance(obj, SBuild):
+                obj.items[sval(key)] = v if not (isinstance(v, tuple) and v[0] == 'T') else v
+                continue
+            if isinstance(obj, SDyn) and obj.kind in ('openup', 'openlist'):
+                continue        # open-upvalue bookkeeping: no observable effect (capture is by value)
             lhs = self.lvalue(obj, key)
+            if lhs[0] in ("R", "U"): self.ver[lhs] = self.ver.get(lhs, 0) + 1
             out.append(('SET', lhs, to_ir(v)))
 
     def lvalue(self, obj, key):
@@ -550,11 +570,14 @@ class PE:
             k = lkey(x['local'])
             if k in env:
                 v = env[k]
+                if isinstance(v, str) and v == 'CONFLICT':
+                    raise Unsupported('read of a carried VM register with conflicting values')
                 return v
             role = self.bind['roles'].get(k)
             if role == 'acc': return ('ACC',)
             if role == 'top': return ('TOP',)
-            if role in ('frames', 'opencount', 'v8'): return ('VMVAR', role)
+            if role == 'opencount': return 0
+            if role in ('frames', 'v8'): return ('VMVAR', role)
             raise Unsupported('unknown local %s' % x['local']['name'])
         if t == 'AstExprGlobal':
             if ('G:' + x['global']) in env: return env['G:' + x['global']]
@@ -594,7 +617,10 @@ class PE:
                 if isinstance(av, (int, float)) and isinstance(bv, (int, float)) and not isinstance(av, bool) and not isinstance(bv, bool):
                     r = fold(op, av, bv)
                     return int(r) if isinstance(r, float) and r.is_integer() and op not in ('/', '^') else r
-            return simp(('BIN', op, to_ir(a), to_ir(b)))
+            A, B = to_ir(a), to_ir(b)
+            if op in ('==', '~=') and (A == B and pure(A) or (A in self.tsrc and self.tsrc.get(A) == self.tsrc.get(B))):
+                return op == '=='
+            return simp(('BIN', op, A, B))
         if t == 'AstExprIfElse':
             c = self.ev(x['condition'], env, out)
             if is_static(c) and not isinstance(c, SObj):
@@ -640,6 +666,9 @@ class PE:
             if obj.kind == 'upvals': return ('U', int(k)) if static_k else ('UX', to_ir(k))
             if obj.kind == 'retbuf': return ('RET', to_ir(key))
             if obj.kind == 'varargs': return ('VA', to_ir(key))
+            if obj.kind == 'openup':
+                # open-upvalue cache: holds exactly the captured register's value
+                return ('R', int(k)) if static_k else ('RX', to_ir(k))
             return ('IDX', ('CONTAINER', obj.kind), to_ir(key))
         return ('IDX', to_ir(obj), to_ir(key))
 
@@ -660,9 +689,9 @@ class PE:
                 proto = args[0]
                 if not isinstance(proto, SProto): raise Unsupported('closure of dynamic proto')
                 caps = args[1]
-                return ('CLOSURE', proto.p, to_ir(caps) if caps is not None else ('K', None))
+                return ('CLOSURE', proto.p, to_ir(caps) if caps is not None else ('CAPS', []))
             if n == 'create':
-                return ('NEWT', [])
+                return SBuild()
             if n == 'coroutine.wrap' and len(args) == 1 and isinstance(args[0], tuple) and args[0][0] == 'GENITER':
                 return args[0]
             if n == 'unpack' and len(args) == 3 and isinstance(args[0], SDyn) and args[0].kind == 'stack':
@@ -710,6 +739,9 @@ class PE:
             return ('GENITER', vals, len(fi['vars']))
         raise Unsupported('function literal in handler')
 
+
+def pure(e):
+    return isinstance(e, tuple) and e[0] in ('R', 'U', 'K', 'T', 'ACC', 'S', 'TOP')
 
 def simp(e):
     """light algebraic simplification of residual IR"""

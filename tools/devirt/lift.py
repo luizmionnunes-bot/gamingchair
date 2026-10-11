@@ -111,7 +111,16 @@ class Lifter:
             for nxt, nsp in successors(stmts):
                 if nxt is None: continue
                 if nxt in sp_at and sp_at[nxt] != nsp:
-                    errors.append((nxt, None, 'sp mismatch %r vs %r' % (sp_at[nxt], nsp)))
+                    old = sp_at[nxt]
+                    if old[:4] == nsp[:4]:
+                        # carried scratch registers disagree: mark conflicting ones
+                        merged = tuple(a if a == b else 'CONFLICT' for a, b in zip(old[4], nsp[4]))
+                        if merged != old[4]:
+                            sp_at[nxt] = old[:4] + (merged,)
+                            ir.pop(nxt, None)
+                            work.append(nxt)
+                        continue
+                    errors.append((nxt, None, 'sp mismatch %r vs %r' % (old, nsp)))
                 sp_at.setdefault(nxt, nsp)
                 work.append(nxt)
         return ir, errors

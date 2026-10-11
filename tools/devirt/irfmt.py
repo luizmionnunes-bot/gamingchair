@@ -108,6 +108,8 @@ class Fmt:
                         items.append('[' + self.e(kk) + '] = ' + self.e(it[2]))
                 else: items.append(self.e(it))
             return '{' + (' ' + ', '.join(items) + ' ' if items else '') + '}'
+        if h == 'CAPS':
+            return '{' + ', '.join(self.e(a) for a in x[1]) + '}'
         if h == 'CLOSURE':
             return 'closure<p%d>(%s)' % (x[1].id, self.e(x[2]))
         if h == 'NATIVE':
