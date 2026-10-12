@@ -169,6 +169,44 @@ class Graph:
                 return j
         return None
 
+    def postdominates(self, a, b):
+        while True:
+            if a == b:
+                return True
+            if b == self.EXIT or b not in self.ipdom:
+                return False
+            nb = self.ipdom[b]
+            if nb == b:
+                return False
+            b = nb
+
+    def common_after(self, targets, inside):
+        """the node where a loop's exits meet: it must post-dominate every one
+        of `targets`, lie outside the loop body `inside`, and be entered only
+        from this region.
+
+        Post-dominance, not reachability: with a cycle around it every exit can
+        *reach* most of the function, including nodes before the loop, and
+        truncating the exits at one of those would re-enter the loop.
+        """
+        if len(targets) < 2:
+            return None
+        reaches = [self.reach(t) for t in targets]
+        common = set(reaches[0])
+        for r in reaches[1:]:
+            common &= r
+        common -= set(inside)
+        if not common:
+            return None
+        region = set().union(*reaches) | set(inside)
+        idx = {x: i for i, x in enumerate(self.rpo)}
+        for j in sorted(common, key=lambda x: idx.get(x, 10 ** 9)):
+            if not all(self.postdominates(j, t) for t in targets):
+                continue
+            if all(q in region for q in self.pred[j]):
+                return j
+        return None
+
     def _refine_follow(self):
         """prefer the header's immediate post-dominator as the loop follow.
 
@@ -334,6 +372,29 @@ class Structurer:
             if n in G.loop_body and (loop is None or loop[0] != n):
                 # emit the loop headed at n
                 follow = G.follow.get(n)
+                # A loop with several exit targets has no single node to break
+                # to: one target is the follow and the edges to the others have
+                # nowhere structured to go. Break instead at the node where all
+                # the exits converge. Every exit, the old follow included, is
+                # then emitted *inside* the body as one case of the chain that
+                # leaves the loop, each ending in `break`, and the convergence
+                # point is emitted once after the loop. Emitting the follow
+                # after the loop instead would run it on the paths that left
+                # through one of the other exits.
+                body = G.loop_body[n]
+                exits = sorted({s for x in body for s in G.succ.get(x, [])
+                                if s not in body})
+                after = G.common_after(exits, body)
+                # `break` leaves exactly one loop, so the node control resumes
+                # at has to be inside the enclosing loop's body (its header
+                # included, which then continues it). A convergence point
+                # beyond that would need a second break to reach and is no
+                # better than the goto it replaces.
+                if after is not None and loop is not None \
+                        and after not in G.loop_body.get(loop[0], ()):
+                    after = None
+                if after is not None and after not in self.emitted:
+                    follow = after
                 # The body's stop set is the loop's own follow only: an outer
                 # stop node must not be inherited here. Truncating a branch at a
                 # stop node makes control fall out of the enclosing `if`, which
