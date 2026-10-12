@@ -219,11 +219,12 @@ def analyze(nodes, entry, params):
         for kind, var, o in B.V[v]:
             root = find(o) if kind == 'def' else find(use_web[o])
             rename[o] = root
-    return rename, B.occ
+    uninit = {find(k) for k in list(parent) if isinstance(k, tuple) and k[0] == 'U'}
+    return rename, B.occ, uninit
 
 def apply(nodes, entry, params):
     """returns (new nodes, mapping web-var -> original var) — params keep their var"""
-    rename, nocc = analyze(nodes, entry, params)
+    rename, nocc, uninit_roots = analyze(nodes, entry, params)
     webs = {}
     pvars = {}
     # parameter webs keep the parameter variable
@@ -244,6 +245,7 @@ def apply(nodes, entry, params):
     out = {}
     for n in order:
         out[n] = rewrite_seq(B, nodes[n], wvar)
+    apply.uninit = {webs[r] for r in uninit_roots if r in webs}
     return out
 
 # the rewrite replays Builder's traversal order exactly

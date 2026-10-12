@@ -239,6 +239,65 @@ def drop_dead(body):
         body = blk(body)
         if not changed[0]: return body
 
+# ---------------------------------------------------------------- propagation
+def fold(e):
+    if e[0] == 'BIN' and e[2][0] == 'K' and e[3][0] == 'K':
+        a, b = e[2][1], e[3][1]
+        if type(a) is int and type(b) is int and e[1] in ('+', '-', '*') and abs(a) < 2**50 and abs(b) < 2**50:
+            r = {'+': a + b, '-': a - b, '*': a * b}[e[1]]
+            if abs(r) < 2**53: return ('K', r)
+        if type(a) is bytes and type(b) is bytes and e[1] == '..': return ('K', a + b)
+    if e[0] == 'UN' and e[1] == '-' and e[2][0] == 'K' and type(e[2][1]) is int: return ('K', -e[2][1])
+    return e
+
+def propagate(body, uninit, params):
+    """single-definition variables that always hold a constant, or a copy of another
+    never-reassigned variable, are replaced at every use (exact: webs guarantee the
+    only reaching definition is that one, and `uninit` excludes nil-before-def reads)"""
+    import polish
+    while True:
+        defs, uses = defs_uses(body)
+        repl = {}
+        loopvars = set()
+        def lv(stmts):
+            for st in stmts:
+                if st[0] == 'FOR': loopvars.add(st[1]); lv(st[5])
+                elif st[0] == 'FORIN': loopvars.update(st[1]); lv(st[3])
+                elif st[0] == 'IF': lv(st[2]); lv(st[3])
+                elif st[0] == 'WHILE': lv(st[2])
+                elif st[0] == 'REPEAT': lv(st[1]); lv(st[3])
+        lv(body)
+        def scan(stmts):
+            for st in stmts:
+                h = st[0]
+                if h == 'SET' and is_var(st[1]) and defs[st[1]] == 1 and st[1] not in uninit and st[1] not in params:
+                    v, e = st[1], st[2]
+                    if e[0] == 'K' and not (isinstance(e[1], bytes) and len(e[1]) > 40 and uses[v] > 1):
+                        repl[v] = e
+                    elif is_var(e) and e not in uninit and e not in loopvars and (defs[e] == 1 or (e in params and defs[e] == 0)) and e != v:
+                        repl[v] = e
+                if h == 'IF': scan(st[2]); scan(st[3])
+                elif h == 'WHILE': scan(st[2])
+                elif h == 'FOR': scan(st[5])
+                elif h == 'FORIN': scan(st[3])
+                elif h == 'REPEAT': scan(st[1]); scan(st[3])
+        scan(body)
+        # copies of variables that are themselves replaced: resolve chains
+        def res(x, seen=()):
+            while x in repl and x not in seen:
+                seen = seen + (x,); x = repl[x]
+            return x
+        if not repl: return body
+        R = {v: res(v) for v in repl}
+        def fe(e):
+            if is_var(e) and e in R: return R[e]
+            return fold(e)
+        def fs(st):
+            if st[0] == 'SET' and is_var(st[1]) and st[1] in R: return []
+            return st
+        body = polish.stmts_map(body, fs, lambda e: e)
+        body = polish.stmts_map(body, lambda st: st, fe)
+
 # ---------------------------------------------------------------- scoping
 def scope(body, params):
     """decide where each variable is declared. Returns new body with
@@ -500,6 +559,7 @@ class Generator:
         nodes[1], _ = strip_prologue(nodes[1], p.nparams)
         params = [('R', i) for i in range(1, p.nparams + 1)]
         nodes = webs.apply(nodes, 1, params)
+        self.uninit = webs.apply.uninit
         out, S = structure.structure(nodes, 1)
         if S.labels:
             self.stats['dispatcher'] += 1
@@ -508,6 +568,7 @@ class Generator:
         out = inline(out)
         out = drop_dead(out)
         out = polish.run(out)
+        out = propagate(out, self.uninit, set(params))
         out = inline(out)
         out = drop_dead(out)
         out = polish.run(out)
