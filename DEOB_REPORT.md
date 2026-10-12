@@ -23,7 +23,7 @@ criptografados decodificados em runtime.
 | B | Remoção de código morto (liveness na AST) | ✅ | grafo de estados idêntico |
 | R | Rename do pool de constantes → nomes de stdlib | ✅ | alpha-rename puro; parseia |
 | C | Estruturação do controle de fluxo (máquina de estados → nativo) | ✅ 13 handlers | traços simbólicos + cobertura |
-| D | Decodificação de strings (best-effort estático) | ✅ (inviável) | decoder identificado |
+| D | Decodificação de strings (estático) | ✅ **386 strings recuperadas** | ver STATIC_RESOLUTION.md |
 
 ### Estágio B (feito)
 Removidos **3.455 linhas**: 196 tabelas mortas, 103 funções mortas (37 geradores do
@@ -76,13 +76,16 @@ com garantia exige um relooper com suporte a loops; deixei-os na forma B+R limpa
 de arriscar emitir código nativo sutilmente incorreto. Verificado: o grafo de estados
 desses 19 (+ os 13 straight-line) é **idêntico** ao do Stage A/R.
 
-### Estágio D (feito — conclusão: inviável estaticamente)
-As strings criptografadas são decodificadas em runtime por **`t[18](<blob>)`**
-(ex.: `t[19] = t[18]("nN(\"*?\026...")`). `t[18]` é um handler-máquina-de-estados que
-depende de `t[1][...]` inicializado em runtime por outros handlers. Decodificar
-estaticamente exigiria emular a VM inteira com seu estado — fora do escopo e não
-confiável. Os decoders aritméticos puros `fN(p1)=t3[p1]+p1*K%4096-C` que pareciam
-decodificar strings eram, na verdade, **mortos** (nunca chamados; removidos no Stage B).
+### Estágio D (feito — strings recuperadas 100% estaticamente)
+Todo o pool é um blob de 196 KB decodificado por `t[19] = t[18]("<blob>")`. O decoder
+`t[18]` (→ `t[8/9/10/17]`) é **puro** (só constantes do arquivo + stdlib). Avaliamos
+`t[18]` estaticamente com um **interpretador de subconjunto Lua em Python**
+(`tools/luaeval.py` + `tools/stdlib_lua.py` + `tools/decode2.py`), rodando o init de
+`f1` com `task.*` no-op (a VM nunca inicia) e parando em `t[19]`. Saíram **189.765 bytes
+determinísticos** = o **bytecode da VM** `t[114]` (as strings são constantes embutidas,
+prefixadas por tamanho; a VM as lê via `t[30]`, um stub do decompilador). Varrendo o
+bytecode recuperamos **386 constantes-string** → `gamingchairac.strings.txt`, revelando
+o anticheat **AntiGamingChair**. Detalhes e limites em `STATIC_RESOLUTION.md`.
 
 ## Inventário dos handlers (pós-B)
 45 handlers, **1.050 estados** no total. 13 handlers não têm máquina de estados de
