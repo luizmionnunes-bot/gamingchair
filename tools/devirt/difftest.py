@@ -40,6 +40,20 @@ def build_devirt():
         'local ok, err = pcall(__main)\nprint("RESULT", ok, err)\nRUNMOCK()\nprint("END")\n'
     open(W + '/devirt_run.lua', 'w', encoding='utf-8', errors='surrogateescape').write(src)
 
+def build_final():
+    import final, model
+    L = lift.Lifter(os.path.join(R, 'gamingchairac.deob.lua'), W + '/deob.json', W + '/t1post.txt', W + '/proto.json')
+    G = final.Generator(L)
+    natives = open(W + '/natives.lua', encoding='utf-8', errors='surrogateescape').read()
+    body = G.render(L.root, '', {})
+    pre = emit.RUNTIME + G.std_preamble() + emit.vm_data(G, list(model.all_protos(L.root))) + lua_consts(L.C) + 'local __NATIVE = ' + natives + '\n'
+    open(W + '/devirt_final.lua', 'w', encoding='utf-8', errors='surrogateescape').write(pre + 'local __main = ' + body + '\nreturn __main\n')
+    src = open(T + '/robloxmock.lua').read() + open(T + '/proxyenv.lua').read() + pre + \
+        'local __main = ' + body + '\n' + 'setfenv(__main, PROXYENV)\n' + \
+        'local ok, err = pcall(__main)\nprint("RESULT", ok, err)\nRUNMOCK()\nprint("END")\n'
+    open(W + '/final_run.lua', 'w', encoding='utf-8', errors='surrogateescape').write(src)
+    print('final stats', dict(G.stats), file=sys.stderr)
+
 def build_orig():
     h = open(W + '/harness.lua', encoding='utf-8', errors='surrogateescape').read()
     pre = open(T + '/base.lua').read() + open(T + '/reconstructed.lua').read() + open(T + '/robloxmock.lua').read() + open(T + '/proxyenv.lua').read()
@@ -57,8 +71,13 @@ def run(path):
     out = r.stdout.decode('latin1').splitlines()
     return [l for l in out if l.startswith(('G\t', 'RESULT', 'XERR', 'PERR', 'M\t', 'END'))]
 
-build_devirt(); build_orig()
-a = run(W + '/h_diff.lua'); b = run(W + '/devirt_run.lua')
+mode = sys.argv[3] if len(sys.argv) > 3 else 'run'
+build_orig()
+if mode == 'final':
+    build_final(); target = W + '/final_run.lua'
+else:
+    build_devirt(); target = W + '/devirt_run.lua'
+a = run(W + '/h_diff.lua'); b = run(target)
 open(W + '/trace_orig.txt', 'w').write('\n'.join(a)); open(W + '/trace_devirt.txt', 'w').write('\n'.join(b))
 n = 0
 for x, y in zip(a, b):

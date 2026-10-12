@@ -58,3 +58,18 @@ __mt.__index = function(s, k)
     if k == "debug" then return __ndebug end
     return v
 end
+-- getfenv seen by the script: inside the VM every function's environment is the
+-- loader's global table (not the proxy passed as p3); make both sides agree.
+local __getfenv = getfenv
+local __ngetfenv = function(a)
+    local r
+    if a == nil then r = __getfenv(2) elseif type(a) == "number" then r = __getfenv(a == 0 and 0 or a + 1) else r = __getfenv(a) end
+    if r == PROXYENV then return __BASE end
+    return r
+end
+local __idx3 = __mt.__index
+__mt.__index = function(s, k)
+    local v = __idx3(s, k)
+    if k == "getfenv" then return __ngetfenv end
+    return v
+end

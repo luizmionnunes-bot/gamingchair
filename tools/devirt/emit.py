@@ -182,6 +182,7 @@ class ProtoFmt(Fmt):
 # ------------------------------------------------------------------ runnable
 RUNTIME = r'''
 local __VM_SHARED = {}
+local __VM_REGS = {}
 local __unpack = table.unpack or unpack
 '''
 
