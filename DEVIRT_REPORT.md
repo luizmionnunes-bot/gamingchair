@@ -89,9 +89,40 @@ sobre se funciona.
   constantes, então o programa lê o seu próprio bytecode e elas têm de ficar.
 
 **O que não volta de bytecode nenhum:** nomes de locais e comentários do
-autor. Locais saem numerados (`v1`, `v2`, …), parâmetros `a1`, `a2`, …,
-upvalues `u1`, `u2`, …. Todo o resto — fluxo, constantes, globais, nomes de
-campo, estrutura de chamada — é do original.
+autor. Todo o resto — fluxo, constantes, globais, nomes de campo, estrutura de
+chamada — é do original.
+
+Onde o próprio código diz o que uma variável guarda, ela leva esse nome
+(`tools/devirt/names.py`). Nada é inventado: o nome vem do global copiado, do
+campo ou método que a produziu, da string de classe passada a `Instance.new`,
+da função de biblioteca que ela aliasa. Uma variável cujas definições
+discordam entre si, ou que só guarda um intermediário, fica numerada — um nome
+errado seria pior que `v12`.
+
+    local v = pcall                       ->  pcall_
+    local v = string.char                 ->  char
+    local v = v8.LocalPlayer              ->  localPlayer
+    local v = v8:GetService("Players")    ->  players
+    local v = v8:GetLogHistory()          ->  logHistory
+    local v = Instance.new("RemoteEvent") ->  remoteEvent
+    local ok, err = pcall(...)            ->  ok, err
+    local v = v8                          ->  o nome de v8, mais um número
+
+**362 dos 1.326 locais** ganham nome, o que cobre **2.572 das 6.855
+menções** a variável (38%); as outras 4.283 continuam `vN`, e continuam
+sendo intermediários sem evidência. Os parâmetros das IIFEs de captura
+também são nomeados, então `(function(u6, u8)` virou
+`(function(logService, localPlayer)` e a linha do kick se lê sozinha:
+
+```lua
+localPlayer:Kick("[AntiGamingChair] Unauthorized activity")
+```
+
+O sufixo `_` marca um *snapshot* de global (`pcall_` guarda `pcall`): o
+programa compara o snapshot com o global vivo depois, de propósito, então os
+dois têm de continuar distinguíveis. Pelo mesmo motivo nenhum local recebe o
+nome de um global que o programa leia em algum lugar — o nome capturaria essa
+leitura.
 
 ## 4. Como isso é verificado
 
@@ -128,7 +159,25 @@ mudava a numeração dos temporários — e, por tabela, todo nome gerado depois
 O arquivo entregue é o mesmo artefato que o teste diferencial verificou,
 tirando o cabeçalho de comentários.
 
-## 5. Limites conhecidos
+## 5. Um bug encontrado e corrigido na nomeação
+
+Nomear expôs um defeito que a numeração escondia. Um upvalue capturado por
+nome é renderizado como o nome que a função *envolvente* dá à variável; se a
+função filha declarasse um local com aquele mesmo nome, a referência ligaria
+no local errado. Com todas as funções numerando de `v1` para cima, isso
+acontecia: **4 casos reais** (protos 8, 127, 177 e 179), onde a filha
+referencia o upvalue *e* declara um local homônimo.
+
+A versão anterior deste arquivo (commit `972eb04`) tem esses 4 pontos
+errados. O teste diferencial não os pegou porque não estão no caminho que o
+ambiente simulado exercita.
+
+A correção é estrutural, não um remendo: cada função recebe o conjunto de
+nomes visíveis nas funções que a contêm e nunca entrega um deles a um local
+seu. `render()` agora afirma a invariante a cada protótipo, então um
+sombreamento futuro quebra a geração em vez de sair silencioso no arquivo.
+
+## 6. Limites conhecidos
 
 - Nomes de locais e comentários originais: perdidos na compilação,
   irrecuperáveis.

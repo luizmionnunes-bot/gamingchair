@@ -14,7 +14,7 @@ Per prototype:
 """
 import sys
 from collections import defaultdict, Counter
-import emit, model, structure, multret, webs, polish, unbox
+import emit, model, names as namer, structure, multret, webs, polish, unbox
 from irfmt import Fmt
 
 VARS = ('R', 'T', 'S', 'ACC', 'W')
@@ -490,23 +490,42 @@ def choose_spill(body, nparams):
     return spill
 
 class Names:
-    def __init__(self):
+    def __init__(self, reserved=()):
         self.map = {}
         self.cnt = Counter()
+        self.reserved = set(reserved)
+    def take(self, v, name):
+        self.map[v] = name
+        self.reserved.add(name)
     def get(self, v):
         if v not in self.map:
             base = {'R': 'v', 'T': 't', 'S': 's', 'ACC': 'acc', 'W': 'v'}[v[0]]
-            self.cnt[base] += 1
-            self.map[v] = '%s%d' % (base, self.cnt[base])
+            while True:
+                self.cnt[base] += 1
+                nm = '%s%d' % (base, self.cnt[base])
+                if nm not in self.reserved:
+                    break
+            self.take(v, nm)
         return self.map[v]
 
 class LuauFmt(Fmt):
-    def __init__(self, gen, proto, upnames, params):
+    def __init__(self, gen, proto, upnames, params, taken=()):
         super().__init__()
         self.gen, self.p, self.upnames = gen, proto, upnames
-        self.N = Names()
-        for i, v in enumerate(params, 1): self.N.map[v] = 'a%d' % i
+        self.taken = frozenset(taken) | frozenset(upnames.values())
+        self.N = Names(self.taken)
+        for i, v in enumerate(params, 1):
+            nm = 'a%d' % i                  # a captured parameter of the
+            while nm in self.N.reserved:    # enclosing function can be named
+                nm += '_'                   # a1 too; do not collide with it
+            self.N.take(v, nm)
         self.ind = ''
+
+    def scope(self):
+        """every name in scope here, for the functions nested inside: a local
+        of theirs must not capture one of these, since an upvalue captured by
+        name is rendered as the enclosing name and would bind to the local."""
+        return self.taken | set(self.N.map.values())
     def e(self, x, prec=0):
         h = x[0]
         if h in VARS:
@@ -577,6 +596,22 @@ class Generator:
         self.ub_vars = None
         self.ub_slots = None
         self.ub_fresh = {}
+        self._forbidden = None
+
+    def forbidden(self):
+        """names no local may take: every global the program reads anywhere.
+
+        A global is rendered as a bare name, so a local called `type` would
+        capture every later `type(x)` in that function -- and the program
+        compares its snapshot of a global against the live one on purpose, so
+        the two have to stay distinct.
+        """
+        if self._forbidden is None:
+            g = set()
+            for out, _params, _uninit in self._pre.values():
+                namer.globals_in(out, g)
+            self._forbidden = g
+        return self._forbidden
 
     def std(self, name):
         """library functions the VM captured at load time (not read from the script env)"""
@@ -696,15 +731,30 @@ class Generator:
         self._body[p.id] = (out, params)
         return self._body[p.id]
 
-    def render(self, p, ind, upnames):
+    def render(self, p, ind, upnames, taken=()):
         if self.ub_vars is None:
             self.plan_unbox(p)
         body, params = self.body(p)
         spill = choose_spill(body, len(params))
         if spill: self.stats['spilled_funcs'] += 1
-        F = LuauFmt(self, p, upnames, params)
+        F = LuauFmt(self, p, upnames, params, taken)
         F.spill = spill
         F.ind = ind
+        # Name every local before rendering anything, so a nested function
+        # knows the whole enclosing scope when it names its own.
+        order, _ = namer.collect(body)
+        for v, nm in namer.assign(body, params, upnames,
+                                  self.forbidden(), F.taken).items():
+            F.N.take(v, nm)
+        self.stats['named'] += len(F.N.map) - len(params)
+        for v in order:
+            F.N.get(v)
+        self.stats['locals'] += len(F.N.map) - len(params)
+        # the invariant the whole naming rests on: an upvalue captured by name
+        # is rendered as the enclosing function's name for it, so no local here
+        # may carry one of those names
+        clash = set(upnames.values()) & set(F.N.map.values())
+        assert not clash, 'proto %s shadows upvalue(s) %s' % (p.id, sorted(clash))
         head = 'function(' + ', '.join(F.e(v) for v in params) + ')'
         pre = (ind + '    local __L = {}\n') if spill else ''
         return head + '\n' + pre + F.block(body, ind + '    ') + ind + 'end'
@@ -717,15 +767,25 @@ class Generator:
         # IIFE, which keeps the VM's by-value capture.
         unboxed = self.ub_slots.get(sub.id, ()) if self.ub_slots else ()
         names, byvalue = {}, []
+        used = set()
         for i, c in enumerate(caps, 1):
             if c[0] in ('K', 'U') or i in unboxed:
                 names[i] = F.e(c)
             else:
                 byvalue.append(i)
-                names[i] = 'u%d' % i
+                # the parameter holds that variable's value, so give it that
+                # variable's name where it is a plain one and still free
+                nm = F.e(c)
+                if not (namer.IDENT.match(nm) and nm not in used
+                        and nm not in self.forbidden()):
+                    nm = 'u%d' % i
+                    while nm in used:
+                        nm += '_'
+                names[i] = nm
+            used.add(names[i])
         if not byvalue:
-            return self.render(sub, F.ind, names)
-        inner = self.render(sub, F.ind + '    ', names)
+            return self.render(sub, F.ind, names, F.scope())
+        inner = self.render(sub, F.ind + '    ', names, F.scope())
         return '(function(%s)\n%s    return %s\n%send)(%s)' % (
             ', '.join(names[i] for i in byvalue), F.ind, inner, F.ind,
             ', '.join(F.e(caps[i - 1]) for i in byvalue))
