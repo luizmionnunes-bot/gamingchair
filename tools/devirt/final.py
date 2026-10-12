@@ -14,10 +14,10 @@ Per prototype:
 """
 import sys
 from collections import defaultdict, Counter
-import emit, structure, multret
+import emit, structure, multret, webs
 from irfmt import Fmt
 
-VARS = ('R', 'T', 'S', 'ACC')
+VARS = ('R', 'T', 'S', 'ACC', 'W')
 
 def is_var(x): return isinstance(x, tuple) and x and x[0] in VARS
 
@@ -162,7 +162,7 @@ def can_inline_into(st, v, val):
     if h in ('WHILE', 'FOR', 'REPEAT'): return False
     if h == 'IF':
         if occurs(st[2], v) or occurs(st[3], v) or not occurs(st[1], v): return False
-    elif h == 'SET' and st[1] == v: return False
+    elif h == 'SET' and (st[1] == v or occurs(st[1], v)): return False
     elif h == 'MSET' and v in st[1]: return False
     order = stmt_order(st)
     if order is None: return False
@@ -343,7 +343,7 @@ def place_decls(body, params):
             elif h == 'REPEAT':
                 inner = rebuild(st[3] + st[1], p, None)
                 st = ('REPEAT', inner, st[2], [])
-            if h == 'SET' and st[1] in mine and st[1] not in declared and first_def.get(st[1]) == i:
+            if h == 'SET' and is_var(st[1]) and st[1] in mine and st[1] not in declared and first_def.get(st[1]) == i:
                 declared.add(st[1]); out.append(('LOCALSET', st[1], st[2])); continue
             if h == 'MSET':
                 newv = [t for t in st[1] if t in mine and t not in declared and first_def.get(t) == i]
@@ -359,13 +359,42 @@ def vkey(v):
     return (v[0], v[1] if len(v) > 1 else 0)
 
 # ---------------------------------------------------------------- rendering
+LIMIT = 180
+
+def max_locals(stmts, base, skip):
+    cur, best = base, base
+    for st in stmts:
+        h = st[0]
+        if h in ('LOCALSET',) and st[1] not in skip: cur += 1
+        elif h == 'LOCALMSET': cur += len([v for v in st[1] if v not in skip])
+        elif h == 'DECL': cur += len([v for v in st[1] if v not in skip])
+        best = max(best, cur)
+        if h == 'IF': best = max(best, max_locals(st[2], cur, skip), max_locals(st[3], cur, skip))
+        elif h == 'WHILE': best = max(best, max_locals(st[2], cur, skip))
+        elif h == 'FOR': best = max(best, max_locals(st[5], cur + 4, skip))
+        elif h == 'REPEAT': best = max(best, max_locals(st[1], cur, skip))
+    return best
+
+def choose_spill(body, nparams):
+    if max_locals(body, nparams, set()) <= LIMIT: return set()
+    cands = []
+    for st in body:
+        if st[0] == 'DECL': cands += st[1]
+        elif st[0] == 'LOCALSET': cands.append(st[1])
+        elif st[0] == 'LOCALMSET': cands += st[1]
+    spill = set()
+    for v in cands:
+        spill.add(v)
+        if max_locals(body, nparams, spill) <= LIMIT: break
+    return spill
+
 class Names:
     def __init__(self):
         self.map = {}
         self.cnt = Counter()
     def get(self, v):
         if v not in self.map:
-            base = {'R': 'v', 'T': 't', 'S': 's', 'ACC': 'acc'}[v[0]]
+            base = {'R': 'v', 'T': 't', 'S': 's', 'ACC': 'acc', 'W': 'v'}[v[0]]
             self.cnt[base] += 1
             self.map[v] = '%s%d' % (base, self.cnt[base])
         return self.map[v]
@@ -379,7 +408,9 @@ class LuauFmt(Fmt):
         self.ind = ''
     def e(self, x, prec=0):
         h = x[0]
-        if h in VARS: return self.N.get(x)
+        if h in VARS:
+            if x in getattr(self, 'spill', ()): return '__L.' + self.N.get(x)
+            return self.N.get(x)
         if h == 'U': return self.upnames.get(x[1], 'u%d' % x[1])
         if h == 'IDX' and x[1] == ('ENV',):
             k = x[2]
@@ -414,9 +445,14 @@ class LuauFmt(Fmt):
     def s(self, st, ind=''):
         self.ind = ind
         h = st[0]
-        if h == 'LOCALSET': return ind + 'local ' + self.e(st[1]) + ' = ' + self.e(st[2]) + '\n'
-        if h == 'LOCALMSET': return ind + 'local ' + ', '.join(self.e(v) for v in st[1]) + ' = ' + self.e(st[2]) + '\n'
-        if h == 'DECL': return ind + 'local ' + ', '.join(self.e(v) for v in st[1]) + '\n'
+        sp = getattr(self, 'spill', ())
+        if h == 'LOCALSET': return ind + ('' if st[1] in sp else 'local ') + self.e(st[1]) + ' = ' + self.e(st[2]) + '\n'
+        if h == 'LOCALMSET':
+            if any(v in sp for v in st[1]): return ind + ', '.join(self.e(v) for v in st[1]) + ' = ' + self.e(st[2]) + '\n'
+            return ind + 'local ' + ', '.join(self.e(v) for v in st[1]) + ' = ' + self.e(st[2]) + '\n'
+        if h == 'DECL':
+            vs = [v for v in st[1] if v not in sp]
+            return (ind + 'local ' + ', '.join(self.e(v) for v in vs) + '\n') if vs else ''
         if h == 'MSET': return ind + ', '.join(self.e(v) for v in st[1]) + ' = ' + self.e(st[2]) + '\n'
         if h == 'CLOSEUPV': return ''
         if h == 'ERRPATH': return ind + 'error("devirt: unreachable path")\n'
@@ -449,6 +485,8 @@ class Generator:
         ir, errs = self.L.lift_proto(p)
         nodes = emit.apply_multret(emit.merge_chains(emit.to_nodes(ir), 1))
         nodes[1], _ = strip_prologue(nodes[1], p.nparams)
+        params = [('R', i) for i in range(1, p.nparams + 1)]
+        nodes = webs.apply(nodes, 1, params)
         out, S = structure.structure(nodes, 1)
         if S.labels:
             self.stats['dispatcher'] += 1
@@ -457,16 +495,19 @@ class Generator:
         out = inline(out)
         out = drop_dead(out)
         out = inline(out)
-        params = [('R', i) for i in range(1, p.nparams + 1)]
         out = place_decls(out, set(params))
         return out, params
 
     def render(self, p, ind, upnames):
         body, params = self.body(p)
+        spill = choose_spill(body, len(params))
+        if spill: self.stats['spilled_funcs'] += 1
         F = LuauFmt(self, p, upnames, params)
+        F.spill = spill
         F.ind = ind
         head = 'function(' + ', '.join(F.e(v) for v in params) + ')'
-        return head + '\n' + F.block(body, ind + '    ') + ind + 'end'
+        pre = (ind + '    local __L = {}\n') if spill else ''
+        return head + '\n' + pre + F.block(body, ind + '    ') + ind + 'end'
 
     def closure(self, F, x):
         sub, caps = x[1], (x[2][1] if x[2][0] == 'CAPS' else [])

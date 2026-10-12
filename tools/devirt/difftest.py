@@ -78,6 +78,21 @@ if mode == 'final':
 else:
     build_devirt(); target = W + '/devirt_run.lua'
 a = run(W + '/h_diff.lua'); b = run(target)
+
+def canon(tr):
+    """global reads have no side effects in the real environment: within a run of
+    consecutive reads (no call / write in between) their order is not significant"""
+    out, run_ = [], []
+    for l in tr:
+        f = l.split('\t')
+        if f[0] == 'G' and f[2] == 'get':
+            run_.append('G\tget\t' + '\t'.join(f[3:])); continue
+        if f[0] == 'M' and f[1] == 'get':
+            run_.append(l); continue
+        out += sorted(run_); run_ = []
+        out.append(l if f[0] != 'G' else 'G\t' + '\t'.join(f[2:]))
+    return out + sorted(run_)
+a, b = canon(a), canon(b)
 open(W + '/trace_orig.txt', 'w').write('\n'.join(a)); open(W + '/trace_devirt.txt', 'w').write('\n'.join(b))
 n = 0
 for x, y in zip(a, b):

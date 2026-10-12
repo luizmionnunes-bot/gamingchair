@@ -70,7 +70,7 @@ class Fmt:
             if o == ('ENV',) and key[0] == 'K' and isinstance(key[1], bytes) and IDENT.match(key[1].decode('latin1')) and key[1].decode('latin1') not in KW:
                 return key[1].decode('latin1')
             os_ = self.e(o, 10)
-            if o[0] not in ('R', 'S', 'T', 'U', 'IDX', 'CALL', 'L', 'FN', 'K') and not os_.startswith('('): os_ = '(' + os_ + ')'
+            if o[0] not in ('R', 'S', 'T', 'U', 'IDX', 'CALL', 'L', 'FN', 'K', 'W', 'ACC') and not os_.startswith('('): os_ = '(' + os_ + ')'
             if o[0] == 'K': os_ = '(' + os_ + ')'
             if key[0] == 'K' and isinstance(key[1], bytes):
                 s = key[1].decode('latin1')
@@ -127,12 +127,16 @@ class Fmt:
     def s(self, st, ind=''):
         h = st[0]
         P = lambda t: ind + t + '\n'
-        if h == 'SET': return P(self.e(st[1]) + ' = ' + self.e(st[2]))
+        if h == 'SET':
+            t = self.e(st[1]) + ' = ' + self.e(st[2])
+            return P((';' if t.startswith('(') else '') + t)
         if h == 'MSET': return P(', '.join(self.e(a) for a in st[1]) + ' = ' + ', '.join(self.e(b) for b in st[2]))
         if h == 'LOCAL': return P('local ' + self.e(st[1]) + ' = ' + self.e(st[2]))
         if h == 'LOCALS': return P('local ' + ', '.join(self.e(t) for t in st[1]) + ' = ' + self.e(st[2]))
         if h == 'DECL': return P('local ' + ', '.join(self.e(t) for t in st[1]))
-        if h == 'EXPR': return P(self.e(st[1]))
+        if h == 'EXPR':
+            t = self.e(st[1])
+            return P((';' if t.startswith('(') else '') + t)
         if h == 'IF':
             out = P('if ' + self.e(st[1]) + ' then') + self.block(st[2], ind + '    ')
             els = st[3]
