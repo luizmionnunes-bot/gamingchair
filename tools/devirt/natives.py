@@ -1,0 +1,156 @@
+#!/usr/bin/env python3
+"""natives.py — extract the VM's native table `t[15]` from the deobfuscated
+source as a standalone Lua table literal, written to <out.lua>.
+
+`peval.py` turns a call of `t[15][n]` into the IR node ('NATIVE', n, args),
+which `emit.py` and `final.py` render as `__NATIVE[n](...)`. Both renderings
+therefore need the table itself; this is the generator for it.
+
+The literal is self-contained: inside it the only free names are `t` — used
+exclusively as `t[1][...]`, which difftest's `lua_consts()` provides — and
+true globals (`table`, `debug`, `game`, `task`, `buffer`, ...), which the
+Roblox mock and the proxy environment provide.
+
+Decompiler holes inside the literal become `NATIVE_STUB[n]` calls with an
+`error("STUB n")` fallback, so an unreconstructed native only breaks the run
+if the trace actually reaches it.
+
+usage: natives.py <deob.lua> <out.lua>
+"""
+import json, os, re, sys
+
+
+def skip_noncode(s, k):
+    """advance past a comment or string starting at k; None if neither"""
+    if s.startswith('--', k):
+        if s.startswith('--[[', k):
+            return s.index(']]', k) + 2
+        return s.index('\n', k) + 1
+    if s[k] in '"\'':
+        q, k = s[k], k + 1
+        while s[k] != q:
+            k += 2 if s[k] == '\\' else 1
+        return k + 1
+    return None
+
+
+def table_literal(s, i):
+    """span of the balanced `{...}` at or after i, skipping strings/comments"""
+    j = i + s[i:].index('{')
+    d, k = 0, j
+    while True:
+        n = skip_noncode(s, k)
+        if n is not None:
+            k = n
+            continue
+        if s[k] == '{':
+            d += 1
+        elif s[k] == '}':
+            d -= 1
+            if d == 0:
+                return j, k + 1
+        k += 1
+
+
+def entry_offsets(lit, ast_exe):
+    """offset of each top-level entry inside the literal, from the real AST.
+
+    Brace/paren depth alone is not enough: a function body does not open a
+    bracket, so commas of a multiple assignment or of a `for ... in` list
+    inside an entry sit at the same depth as the entry separators.
+    """
+    import os, subprocess, tempfile
+    with tempfile.NamedTemporaryFile('w', suffix='.lua', delete=False,
+                                     encoding='utf-8',
+                                     errors='surrogateescape') as f:
+        f.write('local __x = ' + lit + '\n')
+        tmp = f.name
+    try:
+        r = subprocess.run([ast_exe, tmp], capture_output=True)
+        if r.returncode != 0:
+            raise SystemExit('luau-ast failed on the t[15] literal:\n'
+                             + r.stderr.decode('utf-8', 'replace'))
+        ast = json.loads(r.stdout.decode('utf-8', 'surrogateescape'))
+    finally:
+        os.unlink(tmp)
+
+    table = [None]
+
+    def find(n):
+        if table[0] is not None:
+            return
+        if isinstance(n, list):
+            for x in n:
+                find(x)
+        elif isinstance(n, dict):
+            if n.get('type') == 'AstExprTable':
+                table[0] = n
+                return
+            for v in n.values():
+                find(v)
+    find(ast)
+    if table[0] is None:
+        raise SystemExit('no table expression in the t[15] literal')
+
+    # map (line, col) -> offset in `lit`; the wrapper adds a prefix on line 1
+    PREFIX = len('local __x = ')
+    starts, pos = [0], 0
+    for ln in lit.split('\n'):
+        pos += len(ln) + 1
+        starts.append(pos)
+
+    def off(loc):
+        line, col = (int(x) for x in loc.split(' - ')[0].split(','))
+        return starts[line] + col - (PREFIX if line == 0 else 0)
+
+    return [off(it['value']['location']) for it in table[0]['items']]
+
+
+def plug_holes(lit):
+    """replace `-- structuring failed for function N` with a NATIVE_STUB call"""
+    lines = lit.split('\n')
+    holes = []
+    for i, l in enumerate(lines):
+        m = re.search(r'-- structuring failed for function (\d+);', l)
+        if not m:
+            continue
+        n = m.group(1)
+        sig = re.search(r'function\s*\(([^)]*)\)', lines[i - 1])
+        params = sig.group(1).strip() if sig else ''
+        lines[i] = l[:m.start()] + (
+            'do local h = NATIVE_STUB[%s] if not h then error("STUB %s") end'
+            ' return h(%s) end' % (n, n, params))
+        holes.append(int(n))
+    return '\n'.join(lines), holes
+
+
+def main():
+    src_path, out_path = sys.argv[1], sys.argv[2]
+    s = open(src_path, encoding='utf-8', errors='surrogateescape').read()
+    i = s.index('t[15] = {')
+    j, k = table_literal(s, i)
+    lit = s[j:k]
+    ast_exe = os.environ.get('LUAU_AST', 'luau-ast')
+    offs = entry_offsets(lit, ast_exe)
+    body, holes = plug_holes(lit)
+    # which native index holds each hole, for the header comment
+    where = {}
+    for m in re.finditer(r'structuring failed for function (\d+);', lit):
+        idx = sum(1 for o in offs if o <= m.start())
+        where[int(m.group(1))] = idx
+    head = ['-- generated by tools/devirt/natives.py from %s (lines %d-%d)'
+            % (src_path.rsplit('/', 1)[-1],
+               s[:j].count('\n') + 1, s[:k].count('\n') + 1),
+            '-- the VM native table t[15]: %d entries' % len(offs)]
+    for n in sorted(where):
+        head.append('-- hole: function %d in native %d -> NATIVE_STUB[%d]'
+                    % (n, where[n], n))
+    open(out_path, 'w', encoding='utf-8', errors='surrogateescape').write(
+        '\n'.join(head) + '\n' + body + '\n')
+    print('natives %d holes %s' % (len(offs),
+          ', '.join('%d@%d' % (n, where[n]) for n in sorted(where)) or 'none'),
+          file=sys.stderr)
+
+
+if __name__ == '__main__':
+    main()
