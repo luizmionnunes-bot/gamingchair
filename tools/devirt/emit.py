@@ -303,3 +303,24 @@ def dispatcher(nodes, entry):
     for n, b in reversed(cases):
         tree = [('IF', ('BIN', '==', ('L', '__n'), ('K', n)), b, tree)]
     return [('RAW', 'local __n = %d' % entry), ('WHILE', ('K', True), tree)]
+
+
+def lua_consts(C):
+    """the VM's runtime constant table t[1] (captured after init) as a Lua literal"""
+    import re as _re
+    tree = {}
+    for k, v in C.items():
+        path = [int(x) for x in _re.findall(r'\[(\d+)\]', k)]
+        if path[0] != 1: continue
+        d = tree
+        for p in path[:-1]:
+            d = d.setdefault(p, {})
+            if not isinstance(d, dict): break
+        else:
+            d[path[-1]] = v
+    def ser(d):
+        if isinstance(d, dict):
+            return '{' + ', '.join('[%d] = %s' % (k, ser(v)) for k, v in sorted(d.items())) + '}'
+        if isinstance(d, bool): return 'true' if d else 'false'
+        return repr(d)
+    return 'local t = {[1] = %s}\n' % ser(tree[1])

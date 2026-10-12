@@ -442,7 +442,12 @@ class PE:
                     if nt(v) == 'AstExprLocal': ks.add(lkey(v['local']))
                     if nt(v) == 'AstExprGlobal': ks.add('G:' + v['global'])
         flat.walk_nofunc(node, f)
-        for k in ks:
+        # sorted: a set of source locations iterates in hash order, which would
+        # make the temporaries' numbering -- and so every generated name
+        # downstream -- differ between runs. The snapshots are independent of
+        # each other (each reads the value `env` held before this loop), so any
+        # fixed order will do.
+        for k in sorted(ks):
             if k in self.bind['roles']: continue
             if k not in env: continue
             cur = env[k]

@@ -51,4 +51,7 @@ timeout 120 "$L/luau" "$W/h_t1.lua" 2>&1 | grep -a "^T1 \|^TN " > "$W/t1post.txt
 # 4. linearized source + opcode handler map
 python3 "$T/flat.py" "$R/gamingchairac.deob.lua" --ast "$W/deob.json" --out "$W/deob.flat.lua"
 python3 "$T/opmap.py" "$R/gamingchairac.deob.lua" "$W/deob.json" "$W/t1post.txt" "$W/ops.txt" --json "$W/ops.json"
+# 5. deliverables: the bytecode listing and the devirtualized program
+python3 "$T/dumpprotos.py" "$W" "$R/gamingchairac.protos.txt"
+python3 "$T/emitsrc.py" "$W" "$R/gamingchairac.src.lua"
 echo "done: $W"

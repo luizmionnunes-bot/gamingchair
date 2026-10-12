@@ -4,29 +4,14 @@ logging environment and compare their global-access traces.
 
 usage: difftest.py <workdir> <luau-bin-dir>
 """
-import os, re, subprocess, sys
+import os, subprocess, sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import lift, emit, opmap
 T = os.path.dirname(os.path.abspath(__file__))
 R = os.path.dirname(os.path.dirname(T))
 W, LB = sys.argv[1], sys.argv[2]
 
-def lua_consts(C):
-    tree = {}
-    for k, v in C.items():
-        path = [int(x) for x in re.findall(r'\[(\d+)\]', k)]
-        if path[0] != 1: continue
-        d = tree
-        for p in path[:-1]:
-            d = d.setdefault(p, {})
-            if not isinstance(d, dict): break
-        else:
-            d[path[-1]] = v
-    def ser(d):
-        if isinstance(d, dict): return '{' + ', '.join('[%d] = %s' % (k, ser(v)) for k, v in sorted(d.items())) + '}'
-        if isinstance(d, bool): return 'true' if d else 'false'
-        return repr(d)
-    return 'local t = {[1] = %s}\n' % ser(tree[1])
+lua_consts = emit.lua_consts
 
 def build_devirt():
     L = lift.Lifter(os.path.join(R, 'gamingchairac.deob.lua'), W + '/deob.json', W + '/t1post.txt', W + '/proto.json')
