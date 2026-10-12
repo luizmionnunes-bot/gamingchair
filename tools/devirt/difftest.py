@@ -34,28 +34,28 @@ def build_devirt():
     natives = open(W + '/natives.lua', encoding='utf-8', errors='surrogateescape').read()
     body = E.render_run(L.root)
     import model
-    src = open(T + '/proxyenv.lua').read() + emit.RUNTIME + emit.vm_data(E, list(model.all_protos(L.root))) + lua_consts(L.C) + \
+    src = open(T + '/robloxmock.lua').read() + open(T + '/proxyenv.lua').read() + emit.RUNTIME + emit.vm_data(E, list(model.all_protos(L.root))) + lua_consts(L.C) + \
         'local __NATIVE = ' + natives + '\n' + 'local __ENV = PROXYENV\n' + \
         'local __main = (' + body + ')({})\n' + \
-        'local ok, err = pcall(__main)\nprint("RESULT", ok, err)\n'
+        'local ok, err = pcall(__main)\nprint("RESULT", ok, err)\nRUNMOCK()\nprint("END")\n'
     open(W + '/devirt_run.lua', 'w', encoding='utf-8', errors='surrogateescape').write(src)
 
 def build_orig():
     h = open(W + '/harness.lua', encoding='utf-8', errors='surrogateescape').read()
-    pre = open(T + '/base.lua').read() + open(T + '/reconstructed.lua').read() + open(T + '/proxyenv.lua').read()
+    pre = open(T + '/base.lua').read() + open(T + '/reconstructed.lua').read() + open(T + '/robloxmock.lua').read() + open(T + '/proxyenv.lua').read()
     open(W + '/pre_diff.lua', 'w').write(pre)
     subprocess.check_call([sys.executable, T + '/hook.py', W + '/harness.lua', W + '/h_diff.lua', W + '/pre_diff.lua'])
     s = open(W + '/h_diff.lua', encoding='utf-8', errors='surrogateescape').read()
     s = s.replace('t[122] = t[119](t[121], {}, getfenv_())', 't[122] = t[119](t[121], {}, PROXYENV)')
     s = s.replace('MODV = f1(', 'local okk, errr = pcall(function() MODV = f1(', 1)
     i = s.rindex('string.format, ...)')
-    s = s[:i] + 'string.format) end) realprint("RESULT", okk, errr)' + s[i + len('string.format, ...)'):]
+    s = s[:i] + 'string.format) end) realprint("RESULT", okk, errr) RUNMOCK() realprint("END")' + s[i + len('string.format, ...)'):]
     open(W + '/h_diff.lua', 'w', encoding='utf-8', errors='surrogateescape').write(s)
 
 def run(path):
-    r = subprocess.run([LB + '/luau', path], capture_output=True, timeout=600)
+    r = subprocess.run(['sh', '-c', 'ulimit -v 2000000; exec "$0" "$1"', LB + '/luau', path], capture_output=True, timeout=900)
     out = r.stdout.decode('latin1').splitlines()
-    return [l for l in out if l.startswith(('G\t', 'RESULT', 'XERR', 'PERR'))]
+    return [l for l in out if l.startswith(('G\t', 'RESULT', 'XERR', 'PERR', 'M\t', 'END'))]
 
 build_devirt(); build_orig()
 a = run(W + '/h_diff.lua'); b = run(W + '/devirt_run.lua')

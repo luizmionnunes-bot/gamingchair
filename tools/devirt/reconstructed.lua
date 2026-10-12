@@ -66,7 +66,9 @@ HOOK_STUB[234] = function(up, p1, p2)
     local P = p1[123][31]
     local H, keys, S, fmap = P[1], P[2], P[3], P[4]
     local secinfo, modes, paths = H[keys[6]], H[keys[3]], H[keys[4]]
+    local ckey = H[keys[7]][21] or 0
     local instrs, consts, protos, upv, idx, scal = {}, {}, {}, {}, {}, {}
+    local posfix = {}
     for i = 1, #secinfo do
         local si = secinfo[i]
         local ty, base, n = si[1], si[2], si[3]
@@ -74,18 +76,17 @@ HOOK_STUB[234] = function(up, p1, p2)
         if ty == 0 then
             for j = 1, n do
                 local raw = t[100](L, modes[1], base + j, false)
-                local key = raw and raw[4] or 0
-                if key == 0 then
-                    consts[base + j] = t[101](raw, base + j, 0)
-                else
-                    -- runtime-keyed constant (see RECONSTRUCTED.md); placeholder
-                    consts[base + j] = (HOOK_ENC or function() return "<enc>" end)(raw, base + j)
-                end
+                -- payload is XOR-decrypted with the proto key (header t2[42]) and the
+                -- constant's global index; raw[4] is not part of the decryption
+                consts[base + j] = t[101](raw, base + j, ckey)
             end
         elseif ty == 1 then
             for j = 1, n do instrs[base + j] = t[100](L, modes[2], base + j, true) end
         elseif ty == 7 then
             for j = 1, n do protos[base + j] = HOOK_STUB[234](up, t[100](L, modes[3], base + j, false)) end
+        elseif ty == 2 then
+            -- inline-operand positions: {pc, position in the bytecode stream}
+            for j = 1, n do posfix[#posfix + 1] = L[2][j] end
         elseif ty == 4 then
             for j = 1, n do upv[base + j] = L[2][j] end
         elseif ty == 5 then
@@ -95,6 +96,10 @@ HOOK_STUB[234] = function(up, p1, p2)
             if modes[4] == t[1][7] then kind, val = L[1][1], L[2][1] else kind, val = L[1], L[2] end
             scal[kind] = val
         end
+    end
+    for _, e in ipairs(posfix) do
+        local ins = instrs[e[1]]
+        if ins then ins[t[52]] = e[2] end      -- operand D = stream position
     end
     local token = {}
     local obj = {}

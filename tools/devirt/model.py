@@ -75,12 +75,13 @@ def leb(bs):
         m *= 128
     return s
 
-def decode_const(raw, g):
-    """port of t[101](raw, p2, key=raw[4])"""
+def decode_const(raw, g, key=0):
+    """port of t[101](raw, g, key): payload XOR-decrypted with the proto key
+    (header field t2[42]) and the constant's global index (t[99] / t[1][38])"""
     if raw is None: return None
     kind, aux, data, extra = raw.get(1), raw.get(2), arr(raw.get(3)) or [], raw.get(4) or 0
-    if extra != 0:
-        return Enc(kind, bytes(data), arr(extra))
+    if key != 0:
+        data = list(vmcrypto.decrypt(bytes(data), key, g, kind))
     if kind == 0:
         return bytes(data)
     if kind == 1:
@@ -101,12 +102,13 @@ def build(p, parent=None):
     pr = Proto(); pr.parent = parent
     pr.fmap = dict(fmap)
     pr.misc = arr(H[keys[6]])
+    pr.key = arr(pr.misc[20]) or 0
     for i, si in enumerate(secinfo, 1):
         si = arr(si); ty, base, n = si[0], si[1], si[2]
         L = S.get(i)
         if ty == 0:
             for j in range(1, n + 1):
-                pr.consts[base + j] = decode_const(access(L, modes[0], base + j, False), base + j)
+                pr.consts[base + j] = decode_const(access(L, modes[0], base + j, False), base + j, pr.key)
         elif ty == 1:
             for j in range(1, n + 1):
                 pr.code[base + j] = access(L, modes[1], base + j, True)
@@ -128,6 +130,10 @@ def build(p, parent=None):
             if kind == 0: pr.nparams = val
             elif kind == 2: pr.maxstack = val
             else: pr.extra = val
+    # t[116]: instructions with inline operands get D = bytecode stream position
+    for pc, pos in pr.lineinfo:
+        if pc in pr.code and pr.code[pc] is not None:
+            pr.code[pc][10] = pos
     return pr
 
 def load_model(path):
