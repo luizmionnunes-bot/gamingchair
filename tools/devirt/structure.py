@@ -40,6 +40,7 @@ class Graph:
         self.idom = self._dominators(self.entry, self.succ, self.pred, self.rpo)
         self._loops()
         self._postdom()
+        self._refine_follow()
 
     def _rpo(self):
         seen, order = set(), []
@@ -131,6 +132,178 @@ class Graph:
         self.EXIT = EXIT
 
 
+    def reach(self, n, avoid=None):
+        R, st = set(), [n]
+        while st:
+            x = st.pop()
+            if x in R or x == avoid or x not in self.nodes:
+                continue
+            R.add(x)
+            st.extend(self.succ.get(x, []))
+        return R
+
+    def weak_join(self, n, targets):
+        """the convergence point of a two-way branch whose post-dominator is the
+        exit.
+
+        `ipdom` treats a `return` as reaching the exit, so a branch with one
+        returning arm post-dominates nothing and the structurer has to goto the
+        node where the arms actually meet. That node is still a sound place to
+        continue after the `if`, provided it can only be entered from inside the
+        branch: `n` must dominate it, and every one of its predecessors must be
+        reachable from `n`. Both arms are then truncated there and fall out of
+        the `if` onto it.
+        """
+        if len(targets) != 2:
+            return None
+        ra, rb = self.reach(targets[0]), self.reach(targets[1])
+        both = (ra & rb) - {n}
+        if not both:
+            return None
+        idx = {x: i for i, x in enumerate(self.rpo)}
+        reach_n = ra | rb
+        for j in sorted(both, key=lambda x: idx.get(x, 10 ** 9)):
+            if not self.dominates(n, j) or j == n:
+                continue
+            if all(q in reach_n or q == n for q in self.pred[j]):
+                return j
+        return None
+
+    def _refine_follow(self):
+        """prefer the header's immediate post-dominator as the loop follow.
+
+        The RPO heuristic picks the exit closest in reverse post-order, which for
+        a loop with several exit targets is usually one of the intermediate ones;
+        every edge to any other exit then has nowhere structured to go and turns
+        into a goto. The immediate post-dominator is where all the exits
+        converge, so the other exit targets are emitted inside the loop body and
+        reach it with a plain `break`.
+        """
+        for h, body in self.loop_body.items():
+            j = self.ipdom.get(h)
+            if j is None or j == self.EXIT or j in body or j not in self.nodes:
+                continue
+            exits = {s for x in body for s in self.succ[x] if s not in body}
+            if j in exits or any(self.dominates(j, e) for e in exits):
+                self.follow[h] = j
+
+
+def sccs_of(succ, universe):
+    """strongly connected components of the subgraph induced by `universe`,
+    iterative Tarjan. Restricting the node set is what lets the caller look for
+    an irreducible cycle *inside* a reducible loop, which a single pass over the
+    whole graph hides inside the outer component."""
+    def out(n):
+        return [s for s in succ.get(n, []) if s in universe]
+    index, low, on, stack, comps = {}, {}, set(), [], []
+    counter = [0]
+    for root in universe:
+        if root in index:
+            continue
+        work = [(root, iter(out(root)))]
+        index[root] = low[root] = counter[0]; counter[0] += 1
+        stack.append(root); on.add(root)
+        while work:
+            n, it = work[-1]
+            nxt = next(it, None)
+            if nxt is None:
+                work.pop()
+                if work:
+                    low[work[-1][0]] = min(low[work[-1][0]], low[n])
+                if low[n] == index[n]:
+                    comp = set()
+                    while True:
+                        x = stack.pop(); on.discard(x); comp.add(x)
+                        if x == n:
+                            break
+                    comps.append(comp)
+                continue
+            if nxt not in index:
+                index[nxt] = low[nxt] = counter[0]; counter[0] += 1
+                stack.append(nxt); on.add(nxt)
+                work.append((nxt, iter(out(nxt))))
+            elif nxt in on:
+                low[n] = min(low[n], index[nxt])
+    return comps
+
+
+def retarget(stmts, remap):
+    out = []
+    for s in stmts:
+        if s[0] == 'GOTO' and s[1] in remap:
+            out.append(('GOTO', remap[s[1]]))
+        elif s[0] == 'IF':
+            out.append(('IF', s[1], retarget(s[2], remap), retarget(s[3], remap)))
+        else:
+            out.append(s)
+    return out
+
+
+def split_irreducible(nodes, entry, budget=400, rounds=12):
+    """duplicate the secondary entries of irreducible loops.
+
+    The VM's code sharing — one block jumped to from two distant places, each
+    continuing at the same successor — puts two entries on a cycle, so no node
+    dominates it and the dominator-based structurer has to fall back to gotos.
+    Duplicating the nodes a secondary entry reaches before the chosen header
+    leaves that cycle with a single entry, which structures normally. Both paths
+    are mutually exclusive at run time and the copy references the same
+    variables, so this is literal code duplication.
+
+    `budget` caps the statements copied per split; a loop that would cost more
+    keeps its gotos (and the caller its dispatcher).
+    """
+    for _ in range(rounds):
+        G = Graph(nodes, entry)
+        idx = {n: i for i, n in enumerate(G.rpo)}
+        best = [None]
+
+        def visit(universe, depth):
+            for comp in sccs_of(G.succ, universe):
+                if len(comp) == 1:
+                    n = next(iter(comp))
+                    if n not in G.succ.get(n, []):
+                        continue
+                ext = {}
+                for x in comp:
+                    for q in G.pred[x]:
+                        if q not in comp and q in G.nodes:
+                            ext.setdefault(x, []).append(q)
+                if not ext:
+                    continue
+                hdr = min(ext, key=lambda e: idx.get(e, 10 ** 9))
+                for e in ext:
+                    if e == hdr:
+                        continue
+                    dup, stack = set(), [e]
+                    while stack:
+                        x = stack.pop()
+                        if x in dup or x == hdr:
+                            continue
+                        dup.add(x)
+                        stack.extend(t for t in G.succ.get(x, []) if t in comp)
+                    cost = sum(len(nodes[x]) for x in dup)
+                    if cost <= budget and (best[0] is None or cost < best[0][2]):
+                        best[0] = (e, dup, cost, ext[e])
+                if depth < 8:
+                    visit(comp - {hdr}, depth + 1)
+
+        visit(set(nodes), 0)
+        best = best[0]
+        if best is None:
+            return nodes
+        e, dup, _cost, preds = best
+        base = max(nodes) + 1
+        remap = {x: base + i for i, x in enumerate(sorted(dup))}
+        new = dict(nodes)
+        for x in dup:
+            new[remap[x]] = retarget(nodes[x], remap)
+        for q in preds:
+            new[q] = retarget(nodes[q], {e: remap[e]})
+        nodes = new
+    return nodes
+
+
 class Structurer:
     def __init__(self, nodes, entry):
         self.G = Graph(nodes, entry)
@@ -161,7 +334,14 @@ class Structurer:
             if n in G.loop_body and (loop is None or loop[0] != n):
                 # emit the loop headed at n
                 follow = G.follow.get(n)
-                body_out = self.emit_node(n, stop | ({follow} if follow is not None else set()), (n, follow), fresh=True)
+                # The body's stop set is the loop's own follow only: an outer
+                # stop node must not be inherited here. Truncating a branch at a
+                # stop node makes control fall out of the enclosing `if`, which
+                # inside a loop body means going round the loop again, not
+                # reaching that node. Dropping them turns such an edge into an
+                # inline emission or a reported goto instead of wrong code.
+                body_stop = frozenset({follow}) if follow is not None else frozenset()
+                body_out = self.emit_node(n, body_stop, (n, follow), fresh=True)
                 out.append(('WHILE', ('K', True), body_out))
                 n = follow
                 if n is not None and n in self.emitted: n = None
@@ -186,13 +366,22 @@ class Structurer:
         join = None
         if len(tg) > 1:
             j = self.G.ipdom.get(n)
-            if j is not None and j != self.G.EXIT and j in self.nodes:
+            if j is None or j == self.G.EXIT or j not in self.nodes:
+                j = self.G.weak_join(n, tg)
+            # Truncating the arms at the join makes control fall out of the
+            # `if` onto whatever the enclosing chain emits next. That is this
+            # node's own continuation when the join is still unemitted, and the
+            # enclosing construct's when the join is already one of its stop
+            # nodes. In any other case nobody would emit it, so the fall-out
+            # would land on the wrong statement: leave join unset and let the
+            # arms keep their own transfers (break / continue, or a goto that
+            # gets reported).
+            if j is not None and (j not in self.emitted or j in stop):
                 join = j
         inner_stop = stop | ({join} if join is not None else set())
         res = self.tree(st, inner_stop, loop)
-        if join is not None:
-            if join in stop: return res, None
-            return res, join if join not in self.emitted else None
+        if join is not None and join not in stop:
+            return res, join
         return res, None
 
     def tree(self, stmts, stop, loop):

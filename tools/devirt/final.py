@@ -603,6 +603,7 @@ class Generator:
         params = [('R', i) for i in range(1, p.nparams + 1)]
         nodes = webs.apply(nodes, 1, params)
         uninit = webs.apply.uninit
+        nodes = structure.split_irreducible(nodes, 1)
         out, S = structure.structure(nodes, 1)
         if S.labels:
             self.stats['dispatcher'] += 1
