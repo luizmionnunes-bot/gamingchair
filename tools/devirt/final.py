@@ -14,7 +14,7 @@ Per prototype:
 """
 import sys
 from collections import defaultdict, Counter
-import emit, structure, multret, webs
+import emit, structure, multret, webs, polish
 from irfmt import Fmt
 
 VARS = ('R', 'T', 'S', 'ACC', 'W')
@@ -74,6 +74,9 @@ def defs_uses(body):
             defs[s[1]] += 1; expr(s[2]); expr(s[3]); expr(s[4]); [stmt(x) for x in s[5]]
         elif h == 'REPEAT':
             [stmt(x) for x in s[3]]; [stmt(x) for x in s[1]]; expr(s[2])
+        elif h == 'FORIN':
+            for v in s[1]: defs[v] += 1
+            expr(s[2]); [stmt(x) for x in s[3]]
         else:
             for y in s[1:]:
                 if isinstance(y, (tuple, list)): expr(y)
@@ -159,7 +162,7 @@ def in_lazy(st, v):
 def can_inline_into(st, v, val):
     h = st[0]
     if in_lazy(st, v): return False
-    if h in ('WHILE', 'FOR', 'REPEAT'): return False
+    if h in ('WHILE', 'FOR', 'REPEAT', 'FORIN'): return False
     if h == 'IF':
         if occurs(st[2], v) or occurs(st[3], v) or not occurs(st[1], v): return False
     elif h == 'SET' and (st[1] == v or occurs(st[1], v)): return False
@@ -200,6 +203,7 @@ def inline(body):
             if h == 'WHILE': return ('WHILE', st[1], blk(st[2]))
             if h == 'FOR': return ('FOR', st[1], st[2], st[3], st[4], blk(st[5]))
             if h == 'REPEAT': return ('REPEAT', blk(st[1]), st[2], blk(st[3]))
+            if h == 'FORIN': return ('FORIN', st[1], st[2], blk(st[3]))
             return st
         body = blk(body)
         if not changed[0]: return body
@@ -229,6 +233,7 @@ def drop_dead(body):
                 elif h == 'WHILE': st = ('WHILE', st[1], blk(st[2]))
                 elif h == 'FOR': st = ('FOR', st[1], st[2], st[3], st[4], blk(st[5]))
                 elif h == 'REPEAT': st = ('REPEAT', blk(st[1]), st[2], blk(st[3]))
+                elif h == 'FORIN': st = ('FORIN', st[1], st[2], blk(st[3]))
                 out.append(st)
             return out
         body = blk(body)
@@ -240,6 +245,7 @@ def scope(body, params):
     ('LOCALSET', v, e) / ('LOCALMSET', [v], e) / ('DECL', [v]) statements."""
     # occurrences: var -> list of block paths (tuple of ids)
     occ = defaultdict(set)
+    forvars = set()
     blocks = {}
     nid = [0]
     def visit(stmts, path):
@@ -255,6 +261,9 @@ def scope(body, params):
             elif h == 'FOR':
                 walk(st[2:5], lambda x: vs.add(x) if is_var(x) else None); sub = [st[5]]
             elif h == 'REPEAT': sub = [st[3] + st[1]]; walk(st[2], lambda x: vs.add(x) if is_var(x) else None)
+            elif h == 'FORIN':
+                walk(st[2], lambda x: vs.add(x) if is_var(x) else None); sub = [st[3]]
+                forvars.update(st[1])
             else: walk(st, lambda x: vs.add(x) if is_var(x) else None)
             for v in vs: occ[v].add(p)
             if h == 'FOR':
@@ -263,7 +272,7 @@ def scope(body, params):
     visit(body, ())
     decl_at = {}
     for v, paths in occ.items():
-        if v in params: continue
+        if v in params or v in forvars: continue
         common = list(min(paths, key=len))
         for pth in paths:
             k = 0
@@ -285,6 +294,7 @@ def loop_blocks(body):
             elif h == 'WHILE': visit(st[2], True)
             elif h == 'FOR': visit(st[5], True)
             elif h == 'REPEAT': visit(st[3] + st[1], True)
+            elif h == 'FORIN': visit(st[3], True)
     visit(body, False)
     return res
 
@@ -343,6 +353,8 @@ def place_decls(body, params):
             elif h == 'REPEAT':
                 inner = rebuild(st[3] + st[1], p, None)
                 st = ('REPEAT', inner, st[2], [])
+            elif h == 'FORIN':
+                st = ('FORIN', st[1], st[2], rebuild(st[3], p, None))
             if h == 'SET' and is_var(st[1]) and st[1] in mine and st[1] not in declared and first_def.get(st[1]) == i:
                 declared.add(st[1]); out.append(('LOCALSET', st[1], st[2])); continue
             if h == 'MSET':
@@ -373,6 +385,7 @@ def max_locals(stmts, base, skip):
         elif h == 'WHILE': best = max(best, max_locals(st[2], cur, skip))
         elif h == 'FOR': best = max(best, max_locals(st[5], cur + 4, skip))
         elif h == 'REPEAT': best = max(best, max_locals(st[1], cur, skip))
+        elif h == 'FORIN': best = max(best, max_locals(st[3], cur + 3 + len(st[1]), skip))
     return best
 
 def choose_spill(body, nparams):
@@ -494,7 +507,10 @@ class Generator:
         out = normalize(out)
         out = inline(out)
         out = drop_dead(out)
+        out = polish.run(out)
         out = inline(out)
+        out = drop_dead(out)
+        out = polish.run(out)
         out = place_decls(out, set(params))
         return out, params
 
