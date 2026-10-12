@@ -11,6 +11,7 @@ import sys
 from collections import defaultdict
 import structure
 import cleanup
+import multret
 from irfmt import Fmt
 
 sys.setrecursionlimit(1000000)
@@ -74,6 +75,31 @@ def find_const(nodes, preds, n, reg, prefix):
         seen.add(cur)
         cur = ps[0]; body = nodes[cur]
 
+def apply_multret(nodes):
+    for n in list(nodes):
+        nodes[n] = multret.finalize(multret.rewrite(nodes[n]))
+    # `top` is dead once no consumer reads it
+    reads = [False]
+    def f(x):
+        if isinstance(x, tuple) and x and isinstance(x[0], str):
+            if x[0] == 'SET' and x[1] == ('TOP',): f(x[2]); return
+            if x == ('TOP',): reads[0] = True
+            for y in x[1:]: f(y)
+        elif isinstance(x, list):
+            for y in x: f(y)
+    f(list(nodes.values()))
+    if not reads[0]:
+        def drop(st):
+            out = []
+            for s in st:
+                if s[0] == 'SET' and s[1] == ('TOP',): continue
+                if s[0] == 'IF': s = ('IF', s[1], drop(s[2]), drop(s[3]))
+                elif s[0] == 'WHILE': s = ('WHILE', s[1], drop(s[2]))
+                out.append(s)
+            return out
+        for n in nodes: nodes[n] = drop(nodes[n])
+    return nodes
+
 def merge_chains(nodes, entry):
     preds = defaultdict(list)
     for n, st in nodes.items():
@@ -103,7 +129,7 @@ class Emitter:
     def proto_body(self, p):
         ir, errs = self.L.lift_proto(p)
         nodes = to_nodes(ir)
-        nodes = merge_chains(nodes, 1)
+        nodes = apply_multret(merge_chains(nodes, 1))
         out, S = structure.structure(nodes, 1)
         self.report['gotos'] += S.gotos
         self.report['protos'] += 1
@@ -216,11 +242,13 @@ class RunFmt(Fmt):
                     ind + '    T[%d] = %s\n' % (st[1][1], v) + self.block(st[5], ind + '    ') + ind + 'end\n')
         if st[0] == 'ERRPATH': return ind + 'error("devirt: unreachable path")\n'
         if st[0] == 'CRASH': return ind + 'error("attempt to index nil with number")  -- VM jump to invalid pc %d\n' % st[1]
+        if st[0] == 'SETLISTM':
+            return ind + 'do local __m = table.pack(%s) for __k = 1, __m.n do %s[%d + __k] = __m[__k] end end\n' % (self.e(st[2]), self.e(st[1]), st[3] - 1)
         return super().s(st, ind)
 
 def render_run(self, p, ind=''):
     ir, errs = self.L.lift_proto(p)
-    nodes = merge_chains(to_nodes(ir), 1)
+    nodes = apply_multret(merge_chains(to_nodes(ir), 1))
     body, S = structure.structure(nodes, 1)
     if S.labels:
         body = dispatcher(nodes, 1)

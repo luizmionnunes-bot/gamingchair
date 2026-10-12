@@ -161,6 +161,8 @@ class Fmt:
         if h == 'CLOSEUPV': return P('-- close upvalues')
         if h == 'ERRPATH': return P('error("unreachable: %s")' % st[1].replace('"', "'"))
         if h == 'COMMENT': return P('-- ' + st[1])
+        if h == 'SETLISTM':
+            return P('do local __m = table.pack(%s) for __k = 1, __m.n do %s[%d + __k] = __m[__k] end end' % (self.e(st[2]), self.e(st[1]), st[3] - 1))
         if h == 'RAW': return ''.join(ind + l + '\n' for l in st[1].split('\n'))
         return P('--[[%r]]' % (st,))
 
