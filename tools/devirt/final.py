@@ -14,7 +14,7 @@ Per prototype:
 """
 import sys
 from collections import defaultdict, Counter
-import emit, structure, multret, webs, polish
+import emit, model, structure, multret, webs, polish, unbox
 from irfmt import Fmt
 
 VARS = ('R', 'T', 'S', 'ACC', 'W')
@@ -178,7 +178,7 @@ def can_inline_into(st, v, val):
             if x[0] in ('CALL', 'IDX', 'NATIVE', 'CLOSURE'): return False
     return True
 
-def inline(body):
+def inline(body, protect=()):
     while True:
         defs, uses = defs_uses(body)
         changed = [False]
@@ -191,6 +191,7 @@ def inline(body):
                     d, cur = out[-2], out[-1]
                     if d[0] != 'SET' or not is_var(d[1]): break
                     v = d[1]
+                    if v in protect: break
                     if defs[v] != 1 or uses[v] != 1 or not occurs(cur, v): break
                     if v in reads_vars(d[2]): break
                     if not can_inline_into(cur, v, d[2]): break
@@ -238,6 +239,30 @@ def drop_dead(body):
             return out
         body = blk(body)
         if not changed[0]: return body
+
+def drop_closeupv(body):
+    """remove ('CLOSEUPV',) statements.
+
+    The VM emits one to close an upvalue box at the end of a scope; it renders
+    as nothing, and once the box is gone a Lua local declared in the loop body
+    is already fresh per iteration. Left in place it sits between two
+    statements and blocks `inline`, which only folds adjacent pairs.
+    """
+    def blk(stmts):
+        out = []
+        for st in stmts:
+            h = st[0]
+            if h == 'CLOSEUPV':
+                continue
+            if h == 'IF': st = ('IF', st[1], blk(st[2]), blk(st[3]))
+            elif h == 'WHILE': st = ('WHILE', st[1], blk(st[2]))
+            elif h == 'FOR': st = ('FOR', st[1], st[2], st[3], st[4], blk(st[5]))
+            elif h == 'REPEAT': st = ('REPEAT', blk(st[1]), st[2], blk(st[3]))
+            elif h == 'FORIN': st = ('FORIN', st[1], st[2], blk(st[3]))
+            out.append(st)
+        return out
+    return blk(body)
+
 
 # ---------------------------------------------------------------- propagation
 def fold(e):
@@ -366,12 +391,16 @@ def first_is_def(stmts, v):
                    (st[0] == 'MSET' and v in st[1] and not (reads_vars(st[2]) & set(st[1])))
     return False
 
-def place_decls(body, params):
+def place_decls(body, params, fresh=()):
+    """`fresh` names variables that must stay per-iteration: their forward
+    declaration is left inside the loop body instead of being hoisted out of it
+    (see unbox.per_iteration)."""
     decl_at, blocks = scope(body, params)
     loops = loop_blocks(body)
     for v, path in list(decl_at.items()):
         if not path: continue
         if first_is_def(blocks[path[-1]], v): continue
+        if v in fresh: continue
         # forward declaration: must not be inside any loop body
         k = len(path)
         for j, b in enumerate(path):
@@ -543,6 +572,11 @@ class Generator:
         self.shadowed = set()
         self.stats = Counter()
         self.stdused = {}
+        self._pre = {}
+        self._body = {}
+        self.ub_vars = None
+        self.ub_slots = None
+        self.ub_fresh = {}
 
     def std(self, name):
         """library functions the VM captured at load time (not read from the script env)"""
@@ -553,13 +587,22 @@ class Generator:
     def std_preamble(self):
         return ''.join('local %s = %s\n' % (a, n) for a, n in sorted(self.stdused.items()))
 
-    def body(self, p):
+    def pre(self, p):
+        """the prototype's statements up to scoping.
+
+        Cached and kept separate from `body` because the unbox analysis needs a
+        prototype and its children *before* any of them has its declarations
+        placed: a refused consumer invalidates its producer, so scoping can only
+        run once the decision is final.
+        """
+        if p.id in self._pre:
+            return self._pre[p.id]
         ir, errs = self.L.lift_proto(p)
         nodes = emit.apply_multret(emit.merge_chains(emit.to_nodes(ir), 1))
         nodes[1], _ = strip_prologue(nodes[1], p.nparams)
         params = [('R', i) for i in range(1, p.nparams + 1)]
         nodes = webs.apply(nodes, 1, params)
-        self.uninit = webs.apply.uninit
+        uninit = webs.apply.uninit
         out, S = structure.structure(nodes, 1)
         if S.labels:
             self.stats['dispatcher'] += 1
@@ -568,14 +611,93 @@ class Generator:
         out = inline(out)
         out = drop_dead(out)
         out = polish.run(out)
-        out = propagate(out, self.uninit, set(params))
+        out = propagate(out, uninit, set(params))
         out = inline(out)
         out = drop_dead(out)
         out = polish.run(out)
-        out = place_decls(out, set(params))
-        return out, params
+        self._pre[p.id] = (out, params, uninit)
+        return self._pre[p.id]
+
+    def after_unbox(self, out, params, uninit, ub, slots):
+        """the cleanups, re-run on the unboxed form.
+
+        inline/propagate/drop_dead run before unboxing, so none of them sees
+        `b[1]` as a plain variable; without a second pass the box disappears but
+        the copies and dead stores it generated stay. It has to run for the
+        consumer side too (`slots`), which owns no box of its own and would
+        otherwise keep every copy the box reads left behind.
+
+        Unboxed variables are protected from inlining and propagation: they are
+        captured by name, so substituting a value into the capture list would
+        hand the closure a constant where it expects to share the variable.
+        """
+        if not ub and not slots:
+            return out
+        out = drop_closeupv(out)
+        keep = set(params) | set(ub)
+        out = inline(out, ub)
+        out = drop_dead(out)
+        out = polish.run(out)
+        out = propagate(out, uninit, keep)
+        out = inline(out, ub)
+        out = drop_dead(out)
+        out = polish.run(out)
+        return out
+
+    def plan_unbox(self, root):
+        """decide the box removals for the whole prototype tree.
+
+        Rounds: unbox.plan settles producer and consumer, scoping is applied,
+        and any variable whose declaration scoping hoisted out of the loop that
+        defines it is put back in a box (its lifetime would change) — which can
+        in turn free its consumers, hence the loop.
+        """
+        protos = list(model.all_protos(root))
+        blocked = set()
+        while True:
+            cand, slots = unbox.plan(protos, lambda q: self.pre(q)[0], blocked)
+            refused = set()
+            self.ub_fresh = {}
+            for q in protos:
+                vs = cand[q.id]
+                if not vs:
+                    continue
+                body, params, uninit = self.pre(q)
+                fresh = unbox.per_iteration(body, vs)
+                self.ub_fresh[q.id] = fresh
+                rewritten = unbox.rewrite(body, vs, slots.get(q.id, set()))
+                placed = place_decls(
+                    self.after_unbox(rewritten, params, uninit, vs,
+                                     slots.get(q.id, set())),
+                    set(params), fresh)
+                refused |= {(q.id, v)
+                            for v in unbox.unsafe_vars(placed, vs) - fresh}
+            if not refused:
+                break
+            blocked |= refused
+        self.ub_vars, self.ub_slots = cand, slots
+        self.stats['unboxed'] = sum(len(v) for v in cand.values())
+        self.stats['unbox_per_iteration'] = sum(
+            len(v) for v in self.ub_fresh.values())
+        self.stats['unbox_kept_lifetime'] = len(blocked)
+        self.stats['unboxed_slots'] = sum(len(v) for v in slots.values())
+
+    def body(self, p):
+        if p.id in self._body:
+            return self._body[p.id]
+        out, params, uninit = self.pre(p)
+        self.uninit = uninit
+        ub = self.ub_vars.get(p.id, set())
+        slots = self.ub_slots.get(p.id, set())
+        out = unbox.rewrite(out, ub, slots)
+        out = self.after_unbox(out, params, uninit, ub, slots)
+        out = place_decls(out, set(params), self.ub_fresh.get(p.id, ()))
+        self._body[p.id] = (out, params)
+        return self._body[p.id]
 
     def render(self, p, ind, upnames):
+        if self.ub_vars is None:
+            self.plan_unbox(p)
         body, params = self.body(p)
         spill = choose_spill(body, len(params))
         if spill: self.stats['spilled_funcs'] += 1
@@ -588,13 +710,21 @@ class Generator:
 
     def closure(self, F, x):
         sub, caps = x[1], (x[2][1] if x[2][0] == 'CAPS' else [])
-        # by-name capture when the captured expression is a plain variable or
-        # constant; the IIFE form keeps by-value semantics in every other case
-        simple = all(c[0] in ('K', 'U') for c in caps)
-        if simple:
-            names = {i: F.e(c) for i, c in enumerate(caps, 1)}
+        # By-name capture for a plain variable or constant, and for a slot whose
+        # box unbox.py removed: there the shared mutation the box provided is
+        # exactly what a Lua upvalue gives. Everything else goes through the
+        # IIFE, which keeps the VM's by-value capture.
+        unboxed = self.ub_slots.get(sub.id, ()) if self.ub_slots else ()
+        names, byvalue = {}, []
+        for i, c in enumerate(caps, 1):
+            if c[0] in ('K', 'U') or i in unboxed:
+                names[i] = F.e(c)
+            else:
+                byvalue.append(i)
+                names[i] = 'u%d' % i
+        if not byvalue:
             return self.render(sub, F.ind, names)
-        names = {i: 'u%d' % i for i in range(1, len(caps) + 1)}
         inner = self.render(sub, F.ind + '    ', names)
         return '(function(%s)\n%s    return %s\n%send)(%s)' % (
-            ', '.join(names.values()), F.ind, inner, F.ind, ', '.join(F.e(c) for c in caps))
+            ', '.join(names[i] for i in byvalue), F.ind, inner, F.ind,
+            ', '.join(F.e(caps[i - 1]) for i in byvalue))
