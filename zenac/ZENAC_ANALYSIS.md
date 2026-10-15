@@ -51,5 +51,16 @@
 Resumo: proteção em camadas (compilar → serializar com versão alterada → cifrar strings),
 daí a leitura estática render pouco; precisamos decompilar para recuperar a lógica.
 
+## ZenAC vs AGC (gamingchairac) — dificuldade (avaliação preliminar)
+- ZenAC **começa mais fechado**: temos bytecode cru (AGC veio já decompilado); strings
+  com base64+cifra "de verdade" (no AGC o decode cuspia bytecode); versão de serialização
+  alterada (9 vs 14) atrapalha decompiladores.
+- Mas o que travou o AGC foi o **VM aninhado (t[114]) + leitor t[30] = buraco do
+  decompilador** → lógica instrução-a-instrução irrecuperável.
+- **Decisivo:** se o ZenAC decompilar para Lua ofuscado SEM VM aninhado próprio →
+  provavelmente dá pra recuperar 100% da lógica (⇒ no fim mais fácil que o AGC). Se tiver
+  VM aninhado → comparável ou mais difícil.
+- Veredito final depende da decompilação (presença ou não de VM aninhado).
+
 ## Achados (vão sendo anexados abaixo)
 - (aguardando a decompilação / próximos passos)
