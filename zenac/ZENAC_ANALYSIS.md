@@ -62,5 +62,27 @@ daí a leitura estática render pouco; precisamos decompilar para recuperar a l�
   VM aninhado → comparável ou mais difícil.
 - Veredito final depende da decompilação (presença ou não de VM aninhado).
 
+## Dica: arquitetura Luraph VM (fornecida pelo usuário) — 2026-10-15
+Usuário apontou a arquitetura do Luraph: prototypes em **Structure-of-Arrays (11 colunas)**,
+`LPH_Deserialize` lendo de um `buffer` (`readu32/readf64/readi16/copy`), interpretador com
+`PC = PC + 1` pós-incremento, e wrapper externo `return ({...}):t()(...)`.
+
+Verificação contra os artefatos:
+- **AGC (gamingchairac) BATE com essa arquitetura.** `t[114]` é o interpretador: 4164 linhas,
+  loops `while true`, e leitura massiva de **arrays-coluna indexados por PC** — `X[1][i]` (82×),
+  `X[76][i]` (32×), `X[54][i]`, `X[21][i]`, `X[93][i]`… Usa `buffer.create/len/readu8`. Ou seja,
+  é um VM SoA estilo Luraph. O "buraco irrecuperável" `t[30]` (structuring failed func 268) é o
+  **leitor de stream** (`buffer.readu8`/varint) ⇒ **reconstruível**, não perdido.
+- **ZenAC:** `LPH` encontrado antes era **coincidência dentro de um blob base64** (NÃO marcador
+  Luraph). `readf64/readi16/copy/buffer` não estão em claro (strings cifradas). ⇒ Luraph é
+  hipótese forte mas **não confirmada estaticamente**; confirmar na decompilação procurando os
+  fingerprints (wrapper `({...}):t()(...)`, SoA deserializer, aliases de reader, PC++).
+
+## Plano de devirtualização (vale para AGC e, se confirmado, ZenAC)
+1. Reconstruir o deserializer → prototypes SoA (11 colunas).
+2. Mapear opcode virtual → handler (lendo os handlers do interpretador).
+3. Lifting dos opcodes de volta para Lua legível = a lógica real.
+AGC é o alvo concreto imediato (já tenho o bytecode decodificado t[19]=189KB + o VM t[114]).
+
 ## Achados (vão sendo anexados abaixo)
-- (aguardando a decompilação / próximos passos)
+- (aguardando a decompilação do ZenAC / início da devirt do AGC)
