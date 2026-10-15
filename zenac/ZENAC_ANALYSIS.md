@@ -84,5 +84,40 @@ Verificação contra os artefatos:
 3. Lifting dos opcodes de volta para Lua legível = a lógica real.
 AGC é o alvo concreto imediato (já tenho o bytecode decodificado t[19]=189KB + o VM t[114]).
 
+## zenac_out.lua — decompilação recebida (do GitHub, main) — 2026-10-15
+472 KB, 9738 linhas. É o **runtime da VM Luraph decompilado** (não a aplicação ainda).
+Caracterização:
+- **Flattening por `goto __siza_L##`** (labels `::__siza_LN::`). É **Lua 5.2+**, NÃO Luau
+  ⇒ `luau-ast` dá **segfault/erro** (Luau não tem `goto`). Também há um **BOM U+FEFF** no
+  início. ⇒ preciso de parser com `goto` (lua5.3/5.4 ou parser Lua em Python), não o luau.
+- Topo: aliases de stdlib (`v0=type, v1=pairs, v2=bit32.bxor, v3=getmetatable`) + ~muitos
+  `local vN=nil`.
+- **Decryptor de números**: `v23(k,salt,slot)=upval1(k,A)-upval1(salt,B)` guardado em memo
+  `upval0[slot]` (subtração de valores derivados — estilo dos geradores do AGC).
+- **Strings cifradas**: literais byte-escaped (`"\239\191\189..."`, bytes U+FFFD = bytes
+  cifrados manglados em UTF-8) passadas por um decryptor; e um **payload base64 gigante na
+  linha 9664 (18.480 chars)** = o bytecode Luraph com a lógica real do ZenAC.
+- 118 funções, 26 `while true`, 0 `for`, 372 referências `upval`. Sem `buffer`/`readu32`
+  em claro ⇒ Luraph mais antigo (pré-buffer, reader via string) OU readers aliasados.
+
+Conclusão: a **lógica do ZenAC está no payload** (linha 9664), interpretado por este
+runtime. Para recuperá-la: desserializar o payload em protos SoA e liftar — conforme
+`LURAPH_METHODOLOGY.md`.
+
+## Tooling pendente
+- Parser Lua com `goto` (instalar lua5.4, ou `luaparser`/`lupa` em Python) p/ análise de
+  AST do `zenac_out.lua`. O luau-ast só serve para código Luau (sem goto).
+- Decryptor estático de strings (base64/bxor e o subtrator de números) — reaproveitar a
+  abordagem do interpretador Python do AGC (`tools/luaeval.py`).
+
+## Plano de devirt do ZenAC (próximos passos)
+1. Normalizar `zenac_out.lua` (remover BOM) + obter parser com goto.
+2. Decodificar estaticamente as strings/constantes (decryptor base64+bxor e o subtrator).
+3. Identificar o deserializer e o layout de colunas SoA deste build (derivar o mapa, não
+   copiar os números do artigo).
+4. Desserializar o payload (linha 9664) → grafo de protos.
+5. Mapear opcode→handler (AST fingerprint), aplicar lei da continuação (PC=target+1),
+   recuperar CFG, resolver upvalues (p[6]), liftar para Lua legível.
+
 ## Achados (vão sendo anexados abaixo)
-- (aguardando a decompilação do ZenAC / início da devirt do AGC)
+- (recon inicial do zenac_out.lua concluído; próximo: decrypt de strings + deserializer)
