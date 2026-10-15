@@ -32,5 +32,24 @@
 - Alternativa sem decompilador: escrever um desmontador para este formato (v9) — mais
   trabalhoso e menos fiel; só se não houver decompilação.
 
+## Por que o bytecode está "assim" (explicação)
+1. **Código compilado, não fonte.** Luau é compilado para bytecode (instruções da VM +
+   tabela de constantes); o protetor entrega o bytecode, não o `.lua`. Daí o binário de
+   alta entropia.
+2. **Container serializado.** O trecho legível no início (`find`/`sub`/`gsub` + alfabeto
+   base64) é a tabela de strings/constantes, prefixada por tamanho; depois vêm os protos
+   (fluxo de instruções). Cabeçalho `9,3,…` ≠ `luau-compile` local (`14,3,…`) ⇒ versão/
+   serialização alterada (build específico ou serializador customizado — comum para
+   quebrar loaders/decompiladores padrão).
+3. **Strings cifradas.** Não estão em claro: ficam base64+cifradas e são decodificadas em
+   runtime por um decoder base64 embutido (alfabeto + `[^…+/=]` + find/sub/gsub). Por
+   isso o dump cru só traz blobs base64 + utilitários (`getmetatable`,`getfenv`). Medida
+   anti-análise.
+4. **Motivo (anti-cheat client-side).** Se lógica/strings fossem legíveis, exploiters
+   veriam todas as verificações e bypasses; então é enviado ofuscado/cifrado para elevar
+   o custo de RE. Mesma filosofia do gamingchairac (que ainda usa VM própria + flattening).
+Resumo: proteção em camadas (compilar → serializar com versão alterada → cifrar strings),
+daí a leitura estática render pouco; precisamos decompilar para recuperar a lógica.
+
 ## Achados (vão sendo anexados abaixo)
 - (aguardando a decompilação / próximos passos)
