@@ -155,3 +155,62 @@ O artigo **captura o grafo SoA dinamicamente** (hook no deserializer) e só ent�
 
 ## Achados (vão sendo anexados abaixo)
 - Payload cifrado + upvalues não resolvidos ⇒ precisa de dump dinâmico do SoA p/ seguir.
+
+## DESTRAVOU — ClientScript decompilado + decodificado 100% estático (2026-10-15)
+
+O usuário forneceu a **decompilação limpa do ClientScript** (`CoreGui.stuff.ZenAC.
+Client.Modules.ClientScript`, executor Volt) — a **lógica da aplicação** (não o runtime
+Luraph). Diferente do payload cifrado, aqui a proteção de strings é **trivialmente
+estática**:
+
+- **`u1(data, key)`** = XOR de chave repetida: `out[i] = data[i] ⊕ key[i % #key]`
+  (o laço começa em 247 só pra confundir; o offset cancela). Puro, sem runtime.
+- **Helpers de lookup** `NAME(k) -> TABELA[k ± OFFSET]`: cada um indexa uma **tabela de
+  constantes** que uma closure/IIFE recebe como 1º argumento (literal `{[k]=v}` ou
+  `tbl_N` montada por atribuições). Também puro.
+
+### Ferramenta: `zenac/decode_clientscript.py`
+Scanner tokenizer-aware (strings/comentários/brackets) que:
+1. acha os 13 helpers e reconstrói as 13 tabelas de constantes (via IIFE **e** via
+   `local tbl = {}` + `tbl[k]=v` passada a uma closure);
+2. reimplementa `u1` (XOR) e avalia `u1("...","...")` e `NAME(const)` estaticamente;
+3. reescreve o fonte inteiro inline — **283 `u1(...)` + 58 chamadas de helper resolvidas**.
+
+### Saídas
+- `zenac/ZenAC_ClientScript.lua` — decompilação original (entrada).
+- `zenac/ZenAC_ClientScript.decoded.lua` — strings/lookups inline, estrutura intacta.
+- `zenac/ZenAC_ClientScript.clean.lua` — **o código inteiro legível** (idem + removidas as
+  164 anotações `--[[ line/upvalues ]]` do decompilador). 2.609 linhas.
+
+### O que o ZenAC Client faz (mapa de comportamento)
+Serviços: Players, RunService, Workspace, Lighting, ContentProvider, Chat, LogService,
+UserInputService. Classe (metatable `tbl_upv_4`) com métodos:
+- **`_report`** — reporta tamper ao servidor (rótulos `Tampering AC-<cod> detected`).
+- **`_startLoop`** (Heartbeat) — velocidade/jump/health/hipheight (settings
+  `CharacterService.Max*`), **fly/noclip** (raycast/blockcast p/ chão), climb/swim/jump
+  state, spin, teleport/void, obstrução. Códigos **AC-C\*** (movimento), **AC-F\*** (fly).
+- **`_protectHumanoid`** — StateChanged: bloqueia PlatformStanding / StrafingNoPhysics.
+- **`_startAimbotDetect`** (RenderStepped) — lock de mira por nº de frames → **AC-A2**.
+- **`tfg`** — triggerbot/autoclicker: histórico de cliques (InputBegan) + foco de janela →
+  **"nice macro"**.
+- **`vsa`** — tamper de Lighting (Ambient/OutdoorAmbient/Brightness/Fog/Shadow/ClockTime)
+  → **AC-L / AC-V**.
+- **`xry`** — anti-xray: GetPartBoundsInRadius varrendo transparência → **AC-X2**.
+- **`_startService`** — EncryptionService: renomeia/ofusca serviços, varre LogService
+  MessageOut (`loadstring usage/enabled`, `loadstring:%d+`), VehicleSeat anti-noclip →
+  **AC-S / AC-F4**.
+- **`CL`** — detecção de executor/exploit: getgenv/syn/hookfunction/getrawmetatable/
+  debug.info/newproxy `__namecall`/loadstring/`__LOADSTRING_ENABLED__`/gethiddenproperty/
+  readfile/writefile; menu de inspeção; PreloadAsync casando nomes de asset
+  (`rbxasset://RonixExploit/`, `rbxasset://custom_gloop/`, `pandadevelopment.net`,
+  `PandaDev proxy`, Ronix/evon/codex/delta/hydro) → **AC-I** (integridade).
+- **`qwe`** — anti-hitbox: tamanho da cabeça de outros players.
+- **`OnCharacterAdded` / `Start`** — bootstrap por personagem.
+
+Strings de UI de ban: StatusTitle/BanIDTitle/BanReasonFrame/ReasonLabel etc. (GUI de
+aviso). Tudo settings-driven (`_settings.*`), com flags `Disable*Check`.
+
+### Veredito
+A **lógica inteira do ClientScript foi recuperada de forma 100% estática** (só com o
+arquivo + o decodificador). O runtime Luraph (`zenac_out.lua`) continua sendo o
+empacotador; esta é a aplicação que ele carrega, agora legível.
