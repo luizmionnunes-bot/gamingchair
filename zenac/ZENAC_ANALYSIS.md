@@ -119,5 +119,39 @@ runtime. Para recuperá-la: desserializar o payload em protos SoA e liftar — c
 5. Mapear opcode→handler (AST fingerprint), aplicar lei da continuação (PC=target+1),
    recuperar CFG, resolver upvalues (p[6]), liftar para Lua legível.
 
+## Tentativa de devirt — resultados e bloqueio (2026-10-15)
+- **Ferramenta:** instalado `luaparser` 4.2.0 (parser Lua com `goto`) — parseia o
+  `zenac_out.lua` limpo (BOM removido). Conjunto de nós: If/While/Goto/Label/Call/Index/
+  ops; **sem `for`**.
+- **Payloads cifrados:** os 2 grandes literais (18.444 e 9.224 chars) são **base64 de
+  bytes CIFRADOS** → decodificam para binário (~37% imprimível), **sem strings legíveis**.
+  Diferente do AGC (bytecode com strings em claro); aqui é o modelo Luraph de constantes
+  LCG/bxor decifradas em runtime. Scan estático simples não revela nada.
+- **Upvalues NÃO resolvidos:** `upvalN` (upval0..upval12) têm **369 leituras, 0 `local`,
+  2 escritas** → são nomes livres que o decompilador não ligou. Logo `zenac_out.lua`
+  **não é executável offline** (`upval1`=nil ⇒ `v5(v6,v7)` chama nil ⇒ crash imediato).
+
+### Conclusão (limite real, honesto)
+Com os inputs atuais — **payload cifrado** + decompilação com **upvalues não resolvidos**
+e **goto-flattening** — a devirtualização estática completa **não é tratável**:
+- para decifrar o payload preciso do decryptor+chaves do runtime (traçar isso em ~9.700
+  linhas goto/upval-livre é inviável à mão);
+- para rodar o deserializer offline (abordagem do artigo) o runtime precisaria dos
+  upvalues ligados e de stubs — e a decompilação não dá os upvalues.
+
+### Caminho que destrava (divisão de trabalho igual à do artigo)
+O artigo **captura o grafo SoA dinamicamente** (hook no deserializer) e só então faz o
+**lifting estático**. Para o ZenAC, o que destrava:
+1. **(ideal) Dump dinâmico:** rodar o harness do Passo 1 do artigo no **.luau ORIGINAL do
+   ZenAC** (não no bytecode) no seu runtime Luau/executor, com o hook no deserializer
+   (`error("BOUNDARY_CAPTURED")`), gerando o **grafo SoA de 11 colunas (JSON)** + o
+   **k_table** (pool de constantes já decifrado). Com isso eu faço o lifting estático
+   (CFG + lei da continuação + opcode map + upvalues p[6] → Lua limpo) — essa parte eu
+   domino.
+2. **(alternativa) Decompilação com upvalues resolvidos:** se o decompilador emitir os
+   upvalues ligados (não como `upvalN` livres), dá pra rodar o runtime offline e capturar.
+3. **(alternativa) Dumps prontos:** se você tiver os equivalentes do ZenAC a
+   `prototype_graph.txt` / `k_table.json` / `opcode_handlers.txt`, mando o lifting direto.
+
 ## Achados (vão sendo anexados abaixo)
-- (recon inicial do zenac_out.lua concluído; próximo: decrypt de strings + deserializer)
+- Payload cifrado + upvalues não resolvidos ⇒ precisa de dump dinâmico do SoA p/ seguir.
